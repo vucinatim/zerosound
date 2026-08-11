@@ -3,6 +3,39 @@
     <channel>
         <title>ZeroSound</title>
         <item>
+            <title>0.11.0</title>
+            <pubDate>Tue, 11 Aug 2026 14:35:49 +0200</pubDate>
+            <link>https://github.com/vucinatim/zerosound</link>
+            <sparkle:version>13</sparkle:version>
+            <sparkle:shortVersionString>0.11.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[# ZeroSound 0.11.0
+
+- Replaces shared UDP room traffic with ordered TCP control and a dedicated authenticated UDP audio
+  and clock plane.
+- Makes joins explicit and bounded: partial joins clean up automatically and unsuccessful attempts
+  return to discovery within five seconds.
+- Uses short-lived, atomically single-use UDP registration tokens so a stale or replayed endpoint
+  cannot replace an authenticated member's current audio path.
+- Continuously reconciles every speaker against current packet room timestamps and the latest room
+  clock, correcting hardware drift during playback instead of relying on the original anchor.
+- Uses bounded per-receiver audio sends so a slow Mac cannot create growing latency or stall another
+  speaker.
+- Runs TCP room control, coordinator state, UDP routing, and member audio sockets on explicitly
+  separated concurrency owners so audio pressure cannot stall membership or source changes.
+- Detects a silent or failed UDP path and replaces it through the existing authenticated TCP session
+  without leaving or rejoining the room.
+- Keeps live audio isolated from unrelated members joining or leaving.
+- Recovers coordinator handoff through a fenced new term, survivor reconnect, clock relock, and fresh
+  stream generation.
+- Expands diagnostics with control/audio transport state, join stage, before-send drops, clock skew,
+  room-phase error, playback correction, and the last automatic recovery reason.
+- Adds deterministic fault simulations and real TCP/UDP integration coverage for rooms of up to eight
+  Macs.
+]]></description>
+            <enclosure url="https://github.com/vucinatim/zerosound/releases/download/v0.11.0/ZeroSound-0.11.0-macOS-universal.zip" length="4372373" type="application/octet-stream" sparkle:edSignature="vAK0mMJI9v5cHex9exbcDi50bJnW7UrTyMe9XhXSaz4TwHYJl+xsnp6h6Z1yDvcyxxVeqgNA4BRxsSbG/KHhAg=="/>
+        </item>
+        <item>
             <title>0.10.1</title>
             <pubDate>Tue, 11 Aug 2026 11:59:47 +0200</pubDate>
             <link>https://github.com/vucinatim/zerosound</link>
