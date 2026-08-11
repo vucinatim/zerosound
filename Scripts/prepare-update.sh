@@ -38,8 +38,7 @@ trap cleanup EXIT
 archive_name="${archive:t}"
 cp "$archive" "$staging/$archive_name"
 if [[ -n "$release_notes" ]]; then
-  release_notes_name="${archive_name:r}.md"
-  cp "$release_notes" "$staging/$release_notes_name"
+  cp "$release_notes" "$staging/${archive_name:r}.md"
 fi
 if [[ -f "$site/appcast.xml" ]]; then
   cp "$site/appcast.xml" "$staging/appcast.xml"
@@ -70,9 +69,6 @@ fi
 
 mkdir -p "$site"
 cp "$generated" "$site/appcast.xml"
-if [[ -n "$release_notes" && -f "$staging/$release_notes_name" ]]; then
-  cp "$staging/$release_notes_name" "$site/$release_notes_name"
-fi
 (
   cd "$project_root/.build"
   shasum -a 256 "$archive_name" > "ZeroSound-$version-SHA256SUMS"
