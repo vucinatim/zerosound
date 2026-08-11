@@ -1,10 +1,13 @@
-.PHONY: build test app release prepare-update run clean
+.PHONY: build test icon app release prepare-update run clean
 
 build:
 	swift build
 
 test:
 	swift test
+
+icon:
+	./Scripts/build-icon.sh
 
 app:
 	./Scripts/build-app.sh debug
