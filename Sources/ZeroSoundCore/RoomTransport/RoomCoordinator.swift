@@ -23,8 +23,7 @@ final class RoomCoordinator: @unchecked Sendable {
   private var unboundMemberDeadlines: [MemberID: UInt64] = [:]
   private var cleanupTimer: DispatchSourceTimer?
   private var telemetryTimer: DispatchSourceTimer?
-  private var routedSampleRate: UInt32?
-  private var routedGeneration: UInt64?
+  private var isRunning = false
 
   var onSnapshot: (@Sendable (RoomSnapshot) -> Void)?
   var onEvent: (@Sendable (RoomEvent) -> Void)?
@@ -38,27 +37,37 @@ final class RoomCoordinator: @unchecked Sendable {
     reducer = RoomStateMachine(snapshot: snapshot)
     self.localMemberID = localMemberID
     self.advertisesRoom = advertisesRoom
-    audioRouter = UDPAudioRouter(queue: queue)
+    audioRouter = UDPAudioRouter()
     let reconnectDeadline = MonotonicTime.nowNanoseconds() &+ 5_000_000_000
     unboundMemberDeadlines = Dictionary(
       uniqueKeysWithValues: snapshot.members.compactMap { member in
         member.id == localMemberID ? nil : (member.id, reconnectDeadline)
       })
     configureAudioRouter()
+    audioRouter.updateRoute(snapshot)
   }
 
   var snapshot: RoomSnapshot { queue.sync { reducer.snapshot } }
 
   func start() throws {
-    guard reducer.snapshot.coordinatorID == localMemberID else {
-      throw RoomTransitionError.invalidMembershipTransition
+    try queue.sync {
+      guard !isRunning, reducer.snapshot.coordinatorID == localMemberID else {
+        throw RoomTransitionError.invalidMembershipTransition
+      }
+      isRunning = true
+      do {
+        try audioRouter.start()
+        startCleanupTimer()
+      } catch {
+        isRunning = false
+        throw error
+      }
     }
-    try audioRouter.start()
-    startCleanupTimer()
   }
 
   func stop() {
     queue.async { [self] in
+      isRunning = false
       cleanupTimer?.cancel()
       cleanupTimer = nil
       telemetryTimer?.cancel()
@@ -79,29 +88,52 @@ final class RoomCoordinator: @unchecked Sendable {
   }
 
   func broadcastAudio(_ packet: AudioPacket) {
-    queue.async { [self] in routeAudio(packet, from: packet.sourceID) }
+    audioRouter.routeAudio(packet, from: localMemberID)
   }
 
   private func configureAudioRouter() {
     audioRouter.validatesRegistration = { [weak self] registration in
-      self?.validate(registration) == true
+      guard let self else { return false }
+      return self.queue.sync { self.validate(registration) }
     }
     audioRouter.onRegistered = { [weak self] memberID in
-      self?.completeJoin(for: memberID)
+      self?.queue.async { [weak self] in
+        guard let self, self.isRunning else { return }
+        self.completeJoin(for: memberID)
+      }
     }
-    audioRouter.onAudio = { [weak self] packet, memberID in
-      self?.routeAudio(packet, from: memberID)
+    audioRouter.onRoutedAudio = { [weak self] packet in
+      self?.onAudio?(packet)
+    }
+    audioRouter.onStreamFormat = { [weak self] sampleRate in
+      self?.onStreamFormat?(sampleRate)
     }
     audioRouter.onPeerActivity = { [weak self] memberID in
-      self?.markActive(memberID)
+      self?.queue.async { [weak self] in
+        guard let self, self.isRunning else { return }
+        self.markActive(memberID)
+      }
     }
     audioRouter.onReady = { [weak self] port in
       guard let self else { return }
-      self.audioPort = port
-      self.startControlListener(audioPort: port)
+      self.queue.async { [weak self] in
+        guard let self, self.isRunning else { return }
+        self.audioPort = port
+        self.startControlListener(audioPort: port)
+      }
     }
-    audioRouter.onError = { [weak self] message in self?.onError?(message) }
-    audioRouter.onSendDrops = { [weak self] count in self?.onAudioSendDrops?(count) }
+    audioRouter.onError = { [weak self] message in
+      self?.queue.async { [weak self] in
+        guard let self, self.isRunning else { return }
+        self.onError?(message)
+      }
+    }
+    audioRouter.onSendDrops = { [weak self] count in
+      self?.queue.async { [weak self] in
+        guard let self, self.isRunning else { return }
+        self.onAudioSendDrops?(count)
+      }
+    }
   }
 
   private func startControlListener(audioPort: NWEndpoint.Port) {
@@ -257,10 +289,11 @@ final class RoomCoordinator: @unchecked Sendable {
     from sender: MemberID,
     replyTo channel: ControlChannel?
   ) {
-    guard reducer.snapshot.coordinatorID == localMemberID else { return }
+    guard isRunning, reducer.snapshot.coordinatorID == localMemberID else { return }
     guard command.isAuthorized(for: sender) else { return }
     do {
       let events = try reducer.handle(command, nowNanoseconds: MonotonicTime.nowNanoseconds())
+      audioRouter.updateRoute(reducer.snapshot)
       let departingKey: ObjectIdentifier?
       if case .leave(let memberID) = command {
         departingKey = connectionByMember.removeValue(forKey: memberID)
@@ -303,19 +336,6 @@ final class RoomCoordinator: @unchecked Sendable {
         onError?(error.localizedDescription)
       }
     }
-  }
-
-  private func routeAudio(_ packet: AudioPacket, from sender: MemberID) {
-    guard sender == packet.sourceID,
-      AudioPacketFence.accepts(packet, snapshot: reducer.snapshot)
-    else { return }
-    if routedGeneration != packet.streamGeneration || routedSampleRate != packet.sampleRate {
-      routedGeneration = packet.streamGeneration
-      routedSampleRate = packet.sampleRate
-      onStreamFormat?(packet.sampleRate)
-    }
-    audioRouter.sendAudio(packet.encode())
-    onAudio?(packet)
   }
 
   private func markActive(_ memberID: MemberID) {

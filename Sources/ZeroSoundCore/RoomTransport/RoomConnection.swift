@@ -4,8 +4,10 @@ import Foundation
 final class RoomConnection: @unchecked Sendable {
   private let queue = DispatchQueue(label: "com.zerosound.room-connection")
   private let localMember: RoomMember
+  private let joinTimeout: DispatchTimeInterval
   private var controlChannel: ControlChannel?
   private var audioPeer: UDPAudioPeer?
+  private var audioPathEpoch: UInt64 = 0
   private var discoveredRoom: DiscoveredRoom?
   private var room: RoomDescriptor?
   private var estimator = ClockEstimator()
@@ -32,8 +34,12 @@ final class RoomConnection: @unchecked Sendable {
   var onError: (@Sendable (String) -> Void)?
   var onTransportDiagnostics: (@Sendable (TransportDiagnostics) -> Void)?
 
-  init(localMember: RoomMember) {
+  init(
+    localMember: RoomMember,
+    joinTimeout: DispatchTimeInterval = .seconds(5)
+  ) {
     self.localMember = localMember
+    self.joinTimeout = joinTimeout
   }
 
   func connect(to discoveredRoom: DiscoveredRoom) {
@@ -85,6 +91,7 @@ final class RoomConnection: @unchecked Sendable {
     queue.async { [self] in
       didDisconnect = true
       stopTimers()
+      audioPathEpoch &+= 1
       audioPeer?.stop()
       audioPeer = nil
       if notify, let channel = controlChannel, let room {
@@ -158,6 +165,8 @@ final class RoomConnection: @unchecked Sendable {
         }
       }
       publishTransport(control: .ready, audio: .registering)
+      audioPathEpoch &+= 1
+      let epoch = audioPathEpoch
       audioPeer?.stop()
       let peer = UDPAudioPeer(
         endpoint: endpoint,
@@ -166,21 +175,35 @@ final class RoomConnection: @unchecked Sendable {
           memberID: localMember.id,
           coordinatorTerm: currentTerm,
           token: registrationToken
-        ),
-        queue: queue
+        )
       )
-      peer.onAudio = { [weak self] packet in self?.handle(packet) }
-      peer.onClockSample = { [weak self] sample in self?.handle(sample) }
+      peer.onAudio = { [weak self] packet in
+        self?.queue.async { [weak self] in
+          guard let self, self.audioPathEpoch == epoch else { return }
+          self.handle(packet)
+        }
+      }
+      peer.onClockSample = { [weak self] sample in
+        self?.queue.async { [weak self] in
+          guard let self, self.audioPathEpoch == epoch else { return }
+          self.handle(sample)
+        }
+      }
       peer.onError = { [weak self] message in
-        self?.handleAudioPathFailure(message)
+        self?.queue.async { [weak self] in
+          guard let self, self.audioPathEpoch == epoch else { return }
+          self.handleAudioPathFailure(message)
+        }
       }
       peer.onSendDrops = { [weak self] count in
-        guard let self else { return }
-        self.publishTransport(
-          control: self.transportDiagnostics.control,
-          audio: self.transportDiagnostics.audio,
-          audioDatagramsDroppedBeforeSend: count
-        )
+        self?.queue.async { [weak self] in
+          guard let self, self.audioPathEpoch == epoch else { return }
+          self.publishTransport(
+            control: self.transportDiagnostics.control,
+            audio: self.transportDiagnostics.audio,
+            audioDatagramsDroppedBeforeSend: count
+          )
+        }
       }
       audioPeer = peer
       peer.start()
@@ -266,7 +289,7 @@ final class RoomConnection: @unchecked Sendable {
   private func startJoinDeadline() {
     joinTimer?.cancel()
     let timer = DispatchSource.makeTimerSource(queue: queue)
-    timer.schedule(deadline: .now() + .seconds(5))
+    timer.schedule(deadline: .now() + joinTimeout)
     timer.setEventHandler { [weak self] in
       guard let self, !self.joinState.isJoined else { return }
       self.failJoin("The room did not acknowledge this Mac within five seconds.")
@@ -352,6 +375,7 @@ final class RoomConnection: @unchecked Sendable {
     guard joinState.isJoined, transportDiagnostics.audio != .registering,
       let controlChannel, let room
     else { return }
+    audioPathEpoch &+= 1
     audioPeer?.stop()
     audioPeer = nil
     publishTransport(control: .ready, audio: .registering)
@@ -368,6 +392,7 @@ final class RoomConnection: @unchecked Sendable {
 
   private func stopConnections() {
     stopTimers()
+    audioPathEpoch &+= 1
     audioPeer?.stop()
     audioPeer = nil
     controlChannel?.cancel()

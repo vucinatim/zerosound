@@ -4,7 +4,10 @@ import Foundation
 /// Member-owned UDP data plane. Audio delivery and clock sampling can lose datagrams without
 /// affecting the reliable control connection or room membership.
 final class UDPAudioPeer: @unchecked Sendable {
-  private let queue: DispatchQueue
+  private let queue = DispatchQueue(
+    label: "com.zerosound.udp-audio-peer",
+    qos: .userInteractive
+  )
   private let endpoint: NWEndpoint
   private let registration: AudioPlaneRegistration
   private var connection: NWConnection?
@@ -21,17 +24,16 @@ final class UDPAudioPeer: @unchecked Sendable {
   var onError: (@Sendable (String) -> Void)?
   var onSendDrops: (@Sendable (UInt64) -> Void)?
 
-  init(
-    endpoint: NWEndpoint,
-    registration: AudioPlaneRegistration,
-    queue: DispatchQueue
-  ) {
+  init(endpoint: NWEndpoint, registration: AudioPlaneRegistration) {
     self.endpoint = endpoint
     self.registration = registration
-    self.queue = queue
   }
 
   func start() {
+    queue.async { [self] in startOnQueue() }
+  }
+
+  private func startOnQueue() {
     isStopped = false
     hasFailed = false
     let parameters = NWParameters.udp
@@ -57,6 +59,10 @@ final class UDPAudioPeer: @unchecked Sendable {
   }
 
   func stop() {
+    queue.async { [self] in stopOnQueue() }
+  }
+
+  private func stopOnQueue() {
     isStopped = true
     registrationTimer?.cancel()
     registrationTimer = nil
@@ -69,12 +75,15 @@ final class UDPAudioPeer: @unchecked Sendable {
   }
 
   func sendAudio(_ packet: AudioPacket) {
-    enqueueAudio(packet.encode())
+    let data = packet.encode()
+    queue.async { [self] in enqueueAudio(data) }
   }
 
   func markRegistered() {
-    registrationTimer?.cancel()
-    registrationTimer = nil
+    queue.async { [self] in
+      registrationTimer?.cancel()
+      registrationTimer = nil
+    }
   }
 
   private func startRegistering(on connection: NWConnection) {

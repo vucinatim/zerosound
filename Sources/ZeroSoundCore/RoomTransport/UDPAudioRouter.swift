@@ -4,6 +4,23 @@ import Foundation
 /// Coordinator-owned UDP data plane. It routes audio and low-latency clock samples only; room
 /// membership and authorization remain owned by the reliable control session.
 final class UDPAudioRouter: @unchecked Sendable {
+  private struct AudioRoute: Equatable {
+    let sourceID: MemberID
+    let generation: UInt64
+
+    init?(snapshot: RoomSnapshot) {
+      guard case .live(let sourceID) = snapshot.audioSource else { return nil }
+      self.sourceID = sourceID
+      generation = snapshot.streamGeneration
+    }
+
+    func accepts(_ packet: AudioPacket, from memberID: MemberID) -> Bool {
+      memberID == sourceID
+        && packet.sourceID == sourceID
+        && packet.streamGeneration == generation
+    }
+  }
+
   private struct UnidentifiedConnection {
     let connection: NWConnection
     let acceptedAtNanoseconds: UInt64
@@ -14,26 +31,42 @@ final class UDPAudioRouter: @unchecked Sendable {
     var audioSendQueue = LatestValueSendQueue<Data>()
   }
 
-  private let queue: DispatchQueue
+  private let queue = DispatchQueue(
+    label: "com.zerosound.udp-audio-router",
+    qos: .userInteractive
+  )
+  private let lifecycleLock = NSLock()
+  private var isAcceptingTraffic = false
   private var listener: NWListener?
   private var unidentified: [ObjectIdentifier: UnidentifiedConnection] = [:]
   private var peers: [MemberID: Peer] = [:]
   private var droppedAudioDatagrams: UInt64 = 0
   private var cleanupTimer: DispatchSourceTimer?
+  private var dropReportTimer: DispatchSourceTimer?
+  private var audioRoute: AudioRoute?
+  private var routedGeneration: UInt64?
+  private var routedSampleRate: UInt32?
 
   var validatesRegistration: (@Sendable (AudioPlaneRegistration) -> Bool)?
   var onRegistered: (@Sendable (MemberID) -> Void)?
-  var onAudio: (@Sendable (AudioPacket, MemberID) -> Void)?
+  var onRoutedAudio: (@Sendable (AudioPacket) -> Void)?
+  var onStreamFormat: (@Sendable (UInt32) -> Void)?
   var onPeerActivity: (@Sendable (MemberID) -> Void)?
   var onReady: (@Sendable (NWEndpoint.Port) -> Void)?
   var onError: (@Sendable (String) -> Void)?
   var onSendDrops: (@Sendable (UInt64) -> Void)?
 
-  init(queue: DispatchQueue) {
-    self.queue = queue
+  func start() throws {
+    do {
+      try queue.sync { try startOnQueue() }
+    } catch {
+      setAcceptingTraffic(false)
+      throw error
+    }
   }
 
-  func start() throws {
+  private func startOnQueue() throws {
+    setAcceptingTraffic(true)
     let parameters = NWParameters.udp
     parameters.includePeerToPeer = true
     let listener = try NWListener(using: parameters)
@@ -41,6 +74,7 @@ final class UDPAudioRouter: @unchecked Sendable {
       guard let self else { return }
       switch state {
       case .ready:
+        guard self.acceptsTraffic else { return }
         guard let port = listener?.port else { return }
         self.onReady?(port)
       case .failed(let error):
@@ -58,23 +92,44 @@ final class UDPAudioRouter: @unchecked Sendable {
   }
 
   func stop() {
-    listener?.cancel()
-    listener = nil
-    cleanupTimer?.cancel()
-    cleanupTimer = nil
-    for peer in peers.values { peer.connection.cancel() }
-    peers.removeAll()
-    droppedAudioDatagrams = 0
-    for entry in unidentified.values { entry.connection.cancel() }
-    unidentified.removeAll()
+    setAcceptingTraffic(false)
+    queue.async { [self] in
+      listener?.cancel()
+      listener = nil
+      cleanupTimer?.cancel()
+      cleanupTimer = nil
+      dropReportTimer?.cancel()
+      dropReportTimer = nil
+      for peer in peers.values { peer.connection.cancel() }
+      peers.removeAll()
+      droppedAudioDatagrams = 0
+      audioRoute = nil
+      routedGeneration = nil
+      routedSampleRate = nil
+      for entry in unidentified.values { entry.connection.cancel() }
+      unidentified.removeAll()
+    }
   }
 
-  func sendAudio(_ data: Data) {
-    for memberID in peers.keys { enqueueAudio(data, for: memberID) }
+  func updateRoute(_ snapshot: RoomSnapshot) {
+    let route = AudioRoute(snapshot: snapshot)
+    queue.async { [self] in
+      if audioRoute != route {
+        routedGeneration = nil
+        routedSampleRate = nil
+      }
+      audioRoute = route
+    }
+  }
+
+  func routeAudio(_ packet: AudioPacket, from memberID: MemberID) {
+    queue.async { [self] in routeAudioOnQueue(packet, from: memberID) }
   }
 
   func remove(_ memberID: MemberID) {
-    peers.removeValue(forKey: memberID)?.connection.cancel()
+    queue.async { [self] in
+      peers.removeValue(forKey: memberID)?.connection.cancel()
+    }
   }
 
   private func accept(_ connection: NWConnection) {
@@ -114,10 +169,10 @@ final class UDPAudioRouter: @unchecked Sendable {
   }
 
   private func handle(_ data: Data, on connection: NWConnection) {
+    guard acceptsTraffic else { return }
     if let packet = AudioPacket.decode(data) {
       guard let memberID = memberID(for: connection) else { return }
-      onPeerActivity?(memberID)
-      onAudio?(packet, memberID)
+      routeAudioOnQueue(packet, from: memberID)
       return
     }
 
@@ -203,12 +258,50 @@ final class UDPAudioRouter: @unchecked Sendable {
     let immediate = peer.audioSendQueue.enqueue(data)
     if peer.audioSendQueue.droppedValues != previousDrops {
       droppedAudioDatagrams &+= peer.audioSendQueue.droppedValues &- previousDrops
-      onSendDrops?(droppedAudioDatagrams)
+      scheduleDropReport()
     }
     peers[memberID] = peer
     if let immediate {
       sendAudioNow(immediate, to: memberID, on: peer.connection)
     }
+  }
+
+  private func routeAudioOnQueue(_ packet: AudioPacket, from memberID: MemberID) {
+    guard acceptsTraffic, audioRoute?.accepts(packet, from: memberID) == true else { return }
+    if routedGeneration != packet.streamGeneration || routedSampleRate != packet.sampleRate {
+      routedGeneration = packet.streamGeneration
+      routedSampleRate = packet.sampleRate
+      onStreamFormat?(packet.sampleRate)
+    }
+    let data = packet.encode()
+    for peerID in peers.keys { enqueueAudio(data, for: peerID) }
+    onRoutedAudio?(packet)
+  }
+
+  private func scheduleDropReport() {
+    guard dropReportTimer == nil else { return }
+    let timer = DispatchSource.makeTimerSource(queue: queue)
+    timer.schedule(deadline: .now() + .milliseconds(500))
+    timer.setEventHandler { [weak self] in
+      guard let self else { return }
+      self.dropReportTimer?.cancel()
+      self.dropReportTimer = nil
+      self.onSendDrops?(self.droppedAudioDatagrams)
+    }
+    timer.resume()
+    dropReportTimer = timer
+  }
+
+  private var acceptsTraffic: Bool {
+    lifecycleLock.lock()
+    defer { lifecycleLock.unlock() }
+    return isAcceptingTraffic
+  }
+
+  private func setAcceptingTraffic(_ value: Bool) {
+    lifecycleLock.lock()
+    isAcceptingTraffic = value
+    lifecycleLock.unlock()
   }
 
   private func sendAudioNow(

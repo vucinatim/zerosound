@@ -565,6 +565,23 @@ import Testing
   }
 }
 
+@Test(.timeLimit(.minutes(1)))
+func fourHourVirtualSoakKeepsIndependentClocksInRoomPhase() throws {
+  let seeds: [UInt64] = [0x50A4_0001, 0x50A4_0002]
+
+  for seed in seeds {
+    let finalPhase = try simulatedFinalPhaseMilliseconds(
+      seed: seed,
+      durationSeconds: 4 * 60 * 60,
+      correctionMagnitudeNanoseconds: 250_000
+    )
+    #expect(
+      abs(finalPhase) < 3,
+      "Four-hour seed \(String(seed, radix: 16)) finished at \(finalPhase) ms"
+    )
+  }
+}
+
 @Test func reanchorPlannerReusesOnlySafelySchedulableFutureAudio() {
   let planner = PlaybackReanchorPlanner(minimumLeadNanoseconds: 120_000_000)
   let presentations: [UInt64] = [
@@ -785,7 +802,11 @@ private func clockSample(
   )
 }
 
-private func simulatedFinalPhaseMilliseconds(seed: UInt64) throws -> Double {
+private func simulatedFinalPhaseMilliseconds(
+  seed: UInt64,
+  durationSeconds: Int = 90,
+  correctionMagnitudeNanoseconds: Double = 2_000_000
+) throws -> Double {
   let sampleRate: UInt32 = 48_000
   let framesPerStep: Int64 = 960
   let stepNanoseconds: UInt64 = 20_000_000
@@ -811,7 +832,8 @@ private func simulatedFinalPhaseMilliseconds(seed: UInt64) throws -> Double {
   var renderedPlayerSamples = 0.0
   var burstLossRemaining = 0
 
-  for step in 1...(90 * 50) {
+  let totalSteps = durationSeconds * 50
+  for step in 1...totalSteps {
     let scheduledSample = Int64(step) * framesPerStep
     let elapsedStreamSeconds = Double(scheduledSample) / Double(sampleRate)
     let packetRoomTime = UInt64(
@@ -845,9 +867,10 @@ private func simulatedFinalPhaseMilliseconds(seed: UInt64) throws -> Double {
       ))
     _ = controller.observe(phaseErrorNanoseconds: phaseError, at: localTime)
 
-    if step == 1_500 || step == 3_000 {
+    if step < totalSteps, step.isMultiple(of: 30 * 50) {
       let mappedRoomTime = try #require(roomMapping.roomTime(forLocalTime: localTime))
-      let correction = Int64((random.signedUnit() * 2_000_000).rounded())
+      let correction = Int64(
+        (random.signedUnit() * correctionMagnitudeNanoseconds).rounded())
       roomMapping = RoomClockMapping(
         referenceLocalNanoseconds: localTime,
         referenceRoomNanoseconds: Double(Int64(mappedRoomTime) + correction),

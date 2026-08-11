@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import Network
 import Testing
 
 @testable import ZeroSoundCore
@@ -46,6 +47,73 @@ func splitTransportJoinsAndPublishesAuthoritativeRoster() async throws {
 
   connection.disconnect(notify: true)
   coordinator.stop()
+}
+
+@Test(.timeLimit(.minutes(1)))
+func silentJoinTimesOutCleanlyAndTheSameMemberCanRetry() async throws {
+  let coordinatorID = MemberID()
+  let memberID = MemberID()
+  let roomID = RoomID()
+  let initial = RoomSnapshot(
+    id: roomID,
+    name: "Join Retry Test",
+    coordinatorID: coordinatorID,
+    members: [RoomMember(id: coordinatorID, name: "Coordinator", connection: .ready)]
+  )
+  let silentListener = try NWListener(using: tcpParameters())
+  let silentQueue = DispatchQueue(label: "com.zerosound.tests.silent-control")
+  let retainedConnections = ConnectionRetainer()
+  let (ports, portContinuation) = AsyncStream<NWEndpoint.Port>.makeStream()
+  silentListener.stateUpdateHandler = { state in
+    if case .ready = state, let port = silentListener.port {
+      portContinuation.yield(port)
+    }
+  }
+  silentListener.newConnectionHandler = { connection in
+    retainedConnections.retain(connection)
+    connection.start(queue: silentQueue)
+  }
+  silentListener.start(queue: silentQueue)
+  let silentPort = try #require(await nextValue(in: ports) { _ in true })
+
+  let connection = RoomConnection(
+    localMember: RoomMember(id: memberID, name: "Retrying Member"),
+    joinTimeout: .milliseconds(150)
+  )
+  let (disconnects, disconnectContinuation) = AsyncStream<String>.makeStream()
+  let (snapshots, snapshotContinuation) = AsyncStream<RoomSnapshot>.makeStream()
+  connection.onDisconnected = { disconnectContinuation.yield($0) }
+  connection.onSnapshot = { snapshotContinuation.yield($0) }
+  connection.connect(
+    to: DiscoveredRoom(
+      descriptor: RoomDescriptor(snapshot: initial),
+      endpoint: .hostPort(host: "127.0.0.1", port: silentPort),
+      audioPort: 9
+    ))
+
+  let timeout = try #require(
+    await nextValue(in: disconnects) { $0.contains("within five seconds") })
+  #expect(timeout.contains("Could not join room"))
+  silentListener.cancel()
+  retainedConnections.cancelAll()
+  portContinuation.finish()
+
+  let coordinator = RoomCoordinator(
+    snapshot: initial,
+    localMemberID: coordinatorID,
+    advertisesRoom: false
+  )
+  coordinator.onReady = { connection.connect(to: $0) }
+  try coordinator.start()
+  let joined = try #require(await nextSnapshot(in: snapshots) { $0.contains(memberID) })
+  #expect(joined.members.count == 2)
+  try? await Task.sleep(for: .milliseconds(250))
+  #expect(coordinator.snapshot.members.count == 2)
+
+  connection.disconnect()
+  coordinator.stop()
+  disconnectContinuation.finish()
+  snapshotContinuation.finish()
 }
 
 @Test func nonAuthoritativeCoordinatorCannotStartACompetingSession() {
@@ -190,6 +258,118 @@ func registeredMemberCanReplaceOnlyItsAudioPathWithoutRejoiningTheRoom() async t
   connection.disconnect()
   coordinator.stop()
   recoveredContinuation.finish()
+}
+
+@Test(.timeLimit(.minutes(1)))
+func repeatedRoomLifecyclesReleaseTransportStateAndFenceEveryStream() async throws {
+  for cycle in 0..<16 {
+    let coordinatorID = MemberID()
+    let sourceID = MemberID()
+    let coordinator = RoomCoordinator(
+      snapshot: RoomSnapshot(
+        id: RoomID(),
+        name: "Lifecycle \(cycle)",
+        coordinatorID: coordinatorID,
+        members: [RoomMember(id: coordinatorID, name: "Coordinator", connection: .ready)]
+      ),
+      localMemberID: coordinatorID,
+      advertisesRoom: false
+    )
+    let source = RoomConnection(
+      localMember: RoomMember(id: sourceID, name: "Source \(cycle)"))
+    let (snapshots, continuation) = AsyncStream<RoomSnapshot>.makeStream()
+    coordinator.onSnapshot = { continuation.yield($0) }
+    source.onEvent = { event in
+      switch event {
+      case .sourceAssignment(let memberID, let generation) where memberID == sourceID:
+        source.send(.sourcePrimed(memberID: sourceID, generation: generation))
+      case .streamStart(let memberID, let generation, _) where memberID == sourceID:
+        source.send(.sourceLive(memberID: sourceID, generation: generation))
+      default:
+        break
+      }
+    }
+    coordinator.onReady = { source.connect(to: $0) }
+    try coordinator.start()
+
+    #expect(await nextSnapshot(in: snapshots) { $0.contains(sourceID) } != nil)
+    source.send(.requestSource(sourceID))
+    let live = try #require(
+      await nextSnapshot(in: snapshots) { $0.audioSource == .live(sourceID) })
+    #expect(live.streamGeneration == 1)
+
+    source.disconnect(notify: cycle.isMultiple(of: 2))
+    let cleaned = try #require(
+      await nextSnapshot(in: snapshots) {
+        !$0.contains(sourceID) && $0.audioSource == .idle
+      })
+    #expect(cleaned.streamGeneration == 2)
+
+    coordinator.stop()
+    continuation.finish()
+  }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func saturatedAudioPlaneDoesNotDelayReliableRoomControl() async throws {
+  let coordinatorID = MemberID()
+  let memberID = MemberID()
+  let coordinator = RoomCoordinator(
+    snapshot: RoomSnapshot(
+      id: RoomID(),
+      name: "Audio Pressure Test",
+      coordinatorID: coordinatorID,
+      members: [RoomMember(id: coordinatorID, name: "Coordinator", connection: .ready)]
+    ),
+    localMemberID: coordinatorID,
+    advertisesRoom: false
+  )
+  let member = RoomConnection(localMember: RoomMember(id: memberID, name: "Member"))
+  let (snapshots, snapshotContinuation) = AsyncStream<RoomSnapshot>.makeStream()
+  coordinator.onSnapshot = { snapshotContinuation.yield($0) }
+  coordinator.onEvent = { event in
+    switch event {
+    case .sourceAssignment(let sourceID, let generation) where sourceID == coordinatorID:
+      coordinator.submitLocal(.sourcePrimed(memberID: coordinatorID, generation: generation))
+    case .streamStart(let sourceID, let generation, _) where sourceID == coordinatorID:
+      coordinator.submitLocal(.sourceLive(memberID: coordinatorID, generation: generation))
+    default:
+      break
+    }
+  }
+  coordinator.onReady = { member.connect(to: $0) }
+  try coordinator.start()
+  #expect(await nextSnapshot(in: snapshots) { $0.contains(memberID) } != nil)
+  coordinator.submitLocal(.requestSource(coordinatorID))
+  let live = try #require(
+    await nextSnapshot(in: snapshots) { $0.audioSource == .live(coordinatorID) })
+
+  let packet = AudioPacket(
+    sequence: 1,
+    presentationNanoseconds: MonotonicTime.nowNanoseconds() + 300_000_000,
+    sampleRate: 48_000,
+    streamGeneration: live.streamGeneration,
+    sourceID: coordinatorID,
+    floatSamples: [Float](repeating: 0.1, count: SystemAudioStreamer.packetFrames * 2)
+  )
+  let producer = Task.detached {
+    for _ in 0..<20_000 { coordinator.broadcastAudio(packet) }
+  }
+  try? await Task.sleep(for: .milliseconds(5))
+  let controlStarted = ContinuousClock.now
+  member.send(.renameRoom(memberID: memberID, name: "Control Stayed Responsive"))
+  let renamed = try #require(
+    await nextSnapshot(in: snapshots) { $0.name == "Control Stayed Responsive" })
+  let controlLatency = controlStarted.duration(to: .now)
+
+  #expect(renamed.audioSource == live.audioSource)
+  #expect(renamed.streamGeneration == live.streamGeneration)
+  #expect(controlLatency < .seconds(1))
+  _ = await producer.value
+
+  member.disconnect()
+  coordinator.stop()
+  snapshotContinuation.finish()
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -542,6 +722,25 @@ private final class AudioRefreshProbe: @unchecked Sendable {
       return .recovered
     }
     return .none
+  }
+}
+
+private final class ConnectionRetainer: @unchecked Sendable {
+  private let lock = NSLock()
+  private var connections: [NWConnection] = []
+
+  func retain(_ connection: NWConnection) {
+    lock.lock()
+    connections.append(connection)
+    lock.unlock()
+  }
+
+  func cancelAll() {
+    lock.lock()
+    let retained = connections
+    connections.removeAll()
+    lock.unlock()
+    for connection in retained { connection.cancel() }
   }
 }
 
