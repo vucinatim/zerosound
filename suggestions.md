@@ -12,3 +12,4 @@ deferred product-level investments rather than shortcuts inside the v0.8 archite
 3. Consider forward-error correction or Opus only if soak-test packet-loss measurements show that crossfade concealment is insufficient.
 4. Measure browser video lip-sync before deciding whether a virtual AudioDriverKit output device is justified.
 5. Install a Developer ID Application certificate and notary credentials. The release script already enables the hardened runtime, signs the universal binary, submits it, and staples the result when those credentials are available.
+6. Add a repeatable audio-device integration harness that records AVAudioPlayerNode host time, player sample time, and physical loopback timing across output-device and sample-rate changes. Pure timeline tests protect the scheduling contract, while this harness would catch OS- or hardware-specific Core Audio behavior before release.

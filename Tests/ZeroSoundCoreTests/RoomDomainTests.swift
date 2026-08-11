@@ -321,6 +321,34 @@ private func snapshot(
   #expect(policy.evaluate(snapshot: snapshot(members: [broken])) == .needsAttention)
 }
 
+@Test func diagnosticsPolicyNeverCallsUnmeasuredLivePlaybackExcellent() {
+  let policy = RoomDiagnosticsPolicy()
+  let unmeasured = RoomMember(
+    id: memberA,
+    name: "A",
+    connection: .ready,
+    playbackHealth: PlaybackHealth(bufferDepthMilliseconds: 260)
+  )
+  #expect(
+    policy.evaluate(snapshot: snapshot(members: [unmeasured], source: .live(memberA)))
+      == .recovering
+  )
+
+  let synchronized = RoomMember(
+    id: memberA,
+    name: "A",
+    connection: .ready,
+    playbackHealth: PlaybackHealth(
+      bufferDepthMilliseconds: 260,
+      phaseErrorMilliseconds: 0
+    )
+  )
+  #expect(
+    policy.evaluate(snapshot: snapshot(members: [synchronized], source: .live(memberA)))
+      == .excellent
+  )
+}
+
 @Test func inProcessRoomIntegrationSurvivesFaultsTransferReconnectAndElection() throws {
   var network = InProcessRoomTransport(
     snapshot: snapshot(),

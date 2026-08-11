@@ -298,6 +298,73 @@ import Testing
   #expect(late == 8_000_000)
 }
 
+@Test func playbackStartPlanAlignsPlayerSampleZeroWithHardwarePresentation() throws {
+  let planner = PlaybackStartPlanner(minimumSchedulingLeadNanoseconds: 5_000_000)
+  let plan = try #require(
+    planner.plan(
+      presentationNanoseconds: 1_300_000_000,
+      outputLatencyNanoseconds: 2_500_000,
+      nowNanoseconds: 1_000_000_000
+    )
+  )
+
+  #expect(plan.presentationNanoseconds == 1_300_000_000)
+  #expect(plan.renderStartNanoseconds == 1_297_500_000)
+  #expect(plan.playerSampleOrigin == 0)
+
+  let timeline = PlaybackTimeline(
+    anchorPresentationNanoseconds: plan.presentationNanoseconds,
+    anchorPlayerSampleTime: plan.playerSampleOrigin
+  )
+  let synchronized = try #require(
+    timeline.phaseErrorNanoseconds(
+      renderHostNanoseconds: 1_797_500_000,
+      playerSampleTime: 24_000,
+      sampleRate: 48_000,
+      outputLatencyNanoseconds: 2_500_000
+    )
+  )
+  #expect(synchronized == 0)
+}
+
+@Test func playbackStartPlanRejectsAnAnchorWithoutHardwareSchedulingLead() {
+  let planner = PlaybackStartPlanner(minimumSchedulingLeadNanoseconds: 5_000_000)
+  let plan = planner.plan(
+    presentationNanoseconds: 1_007_000_000,
+    outputLatencyNanoseconds: 2_500_000,
+    nowNanoseconds: 1_000_000_000
+  )
+
+  #expect(plan == nil)
+}
+
+@Test func playbackTimelineUsesItsExplicitPlayerSampleOrigin() throws {
+  // A player started 70 ms before its content anchor reports 3,360 pre-roll samples at 48 kHz.
+  // Treating those as content frames recreates the production -70 ms false phase error.
+  let timeline = PlaybackTimeline(
+    anchorPresentationNanoseconds: 1_000_000_000,
+    anchorPlayerSampleTime: 3_360
+  )
+  let synchronized = try #require(
+    timeline.phaseErrorNanoseconds(
+      renderHostNanoseconds: 1_497_500_000,
+      playerSampleTime: 27_360,
+      sampleRate: 48_000,
+      outputLatencyNanoseconds: 2_500_000
+    )
+  )
+
+  #expect(synchronized == 0)
+  #expect(
+    timeline.phaseErrorNanoseconds(
+      renderHostNanoseconds: 999_000_000,
+      playerSampleTime: 3_359,
+      sampleRate: 48_000,
+      outputLatencyNanoseconds: 2_500_000
+    ) == nil
+  )
+}
+
 @Test func reanchorPlannerReusesOnlySafelySchedulableFutureAudio() {
   let planner = PlaybackReanchorPlanner(minimumLeadNanoseconds: 120_000_000)
   let presentations: [UInt64] = [

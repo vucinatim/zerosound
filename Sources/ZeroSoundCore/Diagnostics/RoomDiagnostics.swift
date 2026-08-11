@@ -30,9 +30,15 @@ public struct RoomDiagnosticsPolicy: Sendable {
       $0.recentRendererUnderruns > $0.recentResynchronizations + 1
         || $0.recentMissingPackets >= 12
         || abs($0.phaseErrorMilliseconds ?? 0) >= 20
-        || $0.bufferDepthMilliseconds < 40 && snapshot.audioSource.isLive
+        || ($0.phaseErrorMilliseconds != nil && $0.bufferDepthMilliseconds < 40
+          && snapshot.audioSource.isLive)
     }) {
       return .needsAttention
+    }
+    if snapshot.audioSource.isLive
+      && health.contains(where: { $0.phaseErrorMilliseconds == nil })
+    {
+      return .recovering
     }
     if health.contains(where: {
       $0.recentRendererUnderruns > 0 || $0.recentMissingPackets > 2

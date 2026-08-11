@@ -4,7 +4,6 @@ import Foundation
 final class SynchronizedAudioRenderer: @unchecked Sendable {
   private static let packetsPerRenderBuffer = 4
   private static let fadeInMilliseconds = 5
-  private static let minimumSchedulingLeadNanoseconds: UInt64 = 5_000_000
   private static let statisticsIntervalNanoseconds: UInt64 = 500_000_000
 
   private let queue = DispatchQueue(label: "com.zerosound.audio-renderer", qos: .userInteractive)
@@ -16,6 +15,7 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
   private var phaseController = PlaybackPhaseController()
   private var rollingEvents = RollingPlaybackEvents()
   private var playbackState = SynchronizedPlaybackState()
+  private let startPlanner = PlaybackStartPlanner()
   private let reanchorPlanner = PlaybackReanchorPlanner()
   private var playbackTimeline: PlaybackTimeline?
   private var configuredSampleRate: UInt32?
@@ -170,23 +170,24 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
       let channels = buffer.floatChannelData
     else { return false }
 
-    let scheduleTime: AVAudioTime?
+    let startPlan: PlaybackStartPlan?
     let isRecoveryAnchor: Bool
     switch playbackState.phase {
     case .priming(let anchor, let isRecovery):
-      let renderAnchor =
-        anchor > outputPresentationLatencyNanoseconds
-        ? anchor - outputPresentationLatencyNanoseconds : 0
       guard
-        renderAnchor >= MonotonicTime.nowNanoseconds() &+ Self.minimumSchedulingLeadNanoseconds
+        let plan = startPlanner.plan(
+          presentationNanoseconds: anchor,
+          outputLatencyNanoseconds: outputPresentationLatencyNanoseconds,
+          nowNanoseconds: MonotonicTime.nowNanoseconds()
+        )
       else {
         playbackState.didMissSelectedAnchor()
         return false
       }
-      scheduleTime = MonotonicTime.audioTime(nanoseconds: renderAnchor)
+      startPlan = plan
       isRecoveryAnchor = isRecovery
     case .playing:
-      scheduleTime = nil
+      startPlan = nil
       isRecoveryAnchor = false
     case .awaitingAnchor, .recovering:
       return false
@@ -212,7 +213,7 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     )
     player.scheduleBuffer(
       buffer,
-      at: scheduleTime,
+      at: nil,
       options: [],
       completionCallbackType: .dataPlayedBack
     ) { [weak self] _ in
@@ -230,9 +231,10 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
       }
     }
 
-    if case .priming = playbackState.phase {
+    if let startPlan {
       playbackTimeline = PlaybackTimeline(
-        anchorPresentationNanoseconds: presentationNanoseconds
+        anchorPresentationNanoseconds: startPlan.presentationNanoseconds,
+        anchorPlayerSampleTime: startPlan.playerSampleOrigin
       )
       playbackState.didScheduleAnchor()
       if isRecoveryAnchor {
@@ -242,9 +244,9 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
           pendingPhaseResynchronization = false
         }
       }
-    }
-    if !player.isPlaying {
-      player.play()
+      player.play(
+        at: MonotonicTime.audioTime(nanoseconds: startPlan.renderStartNanoseconds)
+      )
     }
     return true
   }
