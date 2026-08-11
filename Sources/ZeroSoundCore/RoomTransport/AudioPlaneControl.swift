@@ -39,3 +39,32 @@ enum AudioPlaneControlCodec {
     return try JSONDecoder().decode(AudioPlaneControl.self, from: payload)
   }
 }
+
+/// A coordinator-issued capability for binding exactly one UDP endpoint to an authenticated TCP
+/// member. Consumption and expiry are explicit so registration cannot be replayed or kept alive by
+/// unrelated control traffic.
+struct AudioRegistrationLease: Equatable, Sendable {
+  let token: UUID
+  let expiresAtNanoseconds: UInt64
+  private(set) var isConsumed = false
+
+  init(
+    token: UUID = UUID(),
+    issuedAtNanoseconds: UInt64,
+    lifetimeNanoseconds: UInt64
+  ) {
+    self.token = token
+    let (deadline, overflow) = issuedAtNanoseconds.addingReportingOverflow(lifetimeNanoseconds)
+    expiresAtNanoseconds = overflow ? .max : deadline
+  }
+
+  func isActive(at nowNanoseconds: UInt64) -> Bool {
+    !isConsumed && nowNanoseconds < expiresAtNanoseconds
+  }
+
+  mutating func consume(token candidate: UUID, at nowNanoseconds: UInt64) -> Bool {
+    guard candidate == token, isActive(at: nowNanoseconds) else { return false }
+    isConsumed = true
+    return true
+  }
+}

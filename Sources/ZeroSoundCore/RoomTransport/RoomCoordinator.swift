@@ -3,10 +3,12 @@ import Foundation
 
 /// Owns the authoritative room reducer and composes independent TCP control and UDP audio planes.
 final class RoomCoordinator: @unchecked Sendable {
+  private static let audioRegistrationLifetimeNanoseconds: UInt64 = 5_000_000_000
+
   private struct ControlPeer {
     let channel: ControlChannel
     var candidate: RoomMember?
-    var registrationToken: UUID?
+    var registrationLease: AudioRegistrationLease?
     var isJoined = false
     var lastSeenNanoseconds: UInt64
   }
@@ -94,7 +96,7 @@ final class RoomCoordinator: @unchecked Sendable {
   private func configureAudioRouter() {
     audioRouter.validatesRegistration = { [weak self] registration in
       guard let self else { return false }
-      return self.queue.sync { self.validate(registration) }
+      return self.queue.sync { self.consume(registration) }
     }
     audioRouter.onRegistered = { [weak self] memberID in
       self?.queue.async { [weak self] in
@@ -229,26 +231,35 @@ final class RoomCoordinator: @unchecked Sendable {
     }
   }
 
-  private func validate(_ registration: AudioPlaneRegistration) -> Bool {
+  private func consume(_ registration: AudioPlaneRegistration) -> Bool {
     guard
+      isRunning,
+      reducer.snapshot.coordinatorID == localMemberID,
       registration.roomID == reducer.snapshot.id,
       registration.coordinatorTerm == reducer.snapshot.coordinatorTerm,
-      peers.values.contains(where: {
-        $0.candidate?.id == registration.memberID
-          && $0.registrationToken == registration.token
-      })
+      let entry = peers.first(where: { $0.value.candidate?.id == registration.memberID }),
+      var peer = peers[entry.key],
+      var lease = peer.registrationLease,
+      lease.consume(
+        token: registration.token,
+        at: MonotonicTime.nowNanoseconds()
+      )
     else { return false }
+    peer.registrationLease = lease
+    peers[entry.key] = peer
     return true
   }
 
   private func completeJoin(for memberID: MemberID) {
     guard
+      isRunning,
+      reducer.snapshot.coordinatorID == localMemberID,
       let entry = peers.first(where: { $0.value.candidate?.id == memberID }),
       var peer = peers[entry.key],
       let member = peer.candidate
     else { return }
     if peer.isJoined {
-      peer.registrationToken = nil
+      peer.registrationLease = nil
       peer.lastSeenNanoseconds = MonotonicTime.nowNanoseconds()
       peers[entry.key] = peer
       peer.channel.send(
@@ -261,7 +272,7 @@ final class RoomCoordinator: @unchecked Sendable {
       removePeer(oldKey, removesMember: false)
     }
     peer.isJoined = true
-    peer.registrationToken = nil
+    peer.registrationLease = nil
     peer.lastSeenNanoseconds = MonotonicTime.nowNanoseconds()
     peers[entry.key] = peer
     connectionByMember[memberID] = entry.key
@@ -271,15 +282,24 @@ final class RoomCoordinator: @unchecked Sendable {
 
   private func offerAudioPath(to key: ObjectIdentifier, rotatesToken: Bool) {
     guard var peer = peers[key], let audioPort else { return }
-    let token = rotatesToken ? UUID() : (peer.registrationToken ?? UUID())
-    peer.registrationToken = token
+    let now = MonotonicTime.nowNanoseconds()
+    let lease: AudioRegistrationLease
+    if !rotatesToken, let existing = peer.registrationLease, existing.isActive(at: now) {
+      lease = existing
+    } else {
+      lease = AudioRegistrationLease(
+        issuedAtNanoseconds: now,
+        lifetimeNanoseconds: Self.audioRegistrationLifetimeNanoseconds
+      )
+    }
+    peer.registrationLease = lease
     peers[key] = peer
     peer.channel.send(
       ControlMessage(
         header: header,
         payload: .audioOffer(
           port: audioPort.rawValue,
-          registrationToken: token
+          registrationToken: lease.token
         )
       ))
   }

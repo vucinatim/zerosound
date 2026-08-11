@@ -25,6 +25,7 @@ func splitTransportJoinsAndPublishesAuthoritativeRoster() async throws {
   let (snapshots, continuation) = AsyncStream<RoomSnapshot>.makeStream()
   connection.onSnapshot = { continuation.yield($0) }
   coordinator.onReady = { room in connection.connect(to: room) }
+  let joinStarted = ContinuousClock.now
   try coordinator.start()
 
   let joined = await withTaskGroup(of: Bool.self) { group in
@@ -44,6 +45,7 @@ func splitTransportJoinsAndPublishesAuthoritativeRoster() async throws {
   }
   continuation.finish()
   #expect(joined, "joined roster delivered over framed TCP after UDP registration")
+  #expect(joinStarted.duration(to: .now) < .seconds(2))
 
   connection.disconnect(notify: true)
   coordinator.stop()

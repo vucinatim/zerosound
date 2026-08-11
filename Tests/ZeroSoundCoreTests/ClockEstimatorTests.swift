@@ -171,6 +171,30 @@ import Testing
   #expect(try AudioPlaneControlCodec.decode(Data("unrelated".utf8)) == nil)
 }
 
+@Test func audioRegistrationLeaseIsSingleUseAndExpiresIndependently() {
+  let token = UUID()
+  var lease = AudioRegistrationLease(
+    token: token,
+    issuedAtNanoseconds: 1_000,
+    lifetimeNanoseconds: 500
+  )
+
+  let wrongTokenAccepted = lease.consume(token: UUID(), at: 1_100)
+  let firstUseAccepted = lease.consume(token: token, at: 1_499)
+  let replayAccepted = lease.consume(token: token, at: 1_499)
+  #expect(!wrongTokenAccepted)
+  #expect(firstUseAccepted)
+  #expect(!replayAccepted)
+
+  var expired = AudioRegistrationLease(
+    token: token,
+    issuedAtNanoseconds: 1_000,
+    lifetimeNanoseconds: 500
+  )
+  let expiredTokenAccepted = expired.consume(token: token, at: 1_500)
+  #expect(!expiredTokenAccepted)
+}
+
 @Test func realTimeSendQueueIsBoundedAndKeepsOnlyTheNewestPendingPacket() {
   var queue = LatestValueSendQueue<Int>()
 

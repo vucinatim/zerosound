@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import Network
 import Testing
 
 @testable import ZeroSoundCore
@@ -284,6 +285,43 @@ private func snapshot(
   #expect(!incompatibleAudio.isCompatible)
 }
 
+@Test func discoverySelectionConvergesOnHighestTermAndDeterministicTieBreak() throws {
+  let smallerCoordinator = MemberID(
+    try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000010")))
+  let largerCoordinator = MemberID(
+    try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000020")))
+  let old = discoveredRoom(coordinatorID: smallerCoordinator, term: 4, port: 4_004)
+  let new = discoveredRoom(coordinatorID: largerCoordinator, term: 5, port: 5_005)
+  #expect(RoomDiscovery.prefers(new, over: old))
+  #expect(!RoomDiscovery.prefers(old, over: new))
+
+  let equalTermLarger = discoveredRoom(
+    coordinatorID: largerCoordinator,
+    term: 6,
+    port: 6_006
+  )
+  let equalTermSmaller = discoveredRoom(
+    coordinatorID: smallerCoordinator,
+    term: 6,
+    port: 6_007
+  )
+  #expect(RoomDiscovery.prefers(equalTermSmaller, over: equalTermLarger))
+  #expect(!RoomDiscovery.prefers(equalTermLarger, over: equalTermSmaller))
+
+  let lowerEndpoint = discoveredRoom(
+    coordinatorID: smallerCoordinator,
+    term: 6,
+    port: 6_001
+  )
+  let higherEndpoint = discoveredRoom(
+    coordinatorID: smallerCoordinator,
+    term: 6,
+    port: 6_009
+  )
+  #expect(RoomDiscovery.prefers(lowerEndpoint, over: higherEndpoint))
+  #expect(!RoomDiscovery.prefers(higherEndpoint, over: lowerEndpoint))
+}
+
 @Test func audioFenceRejectsOldSourceAndGeneration() {
   let room = snapshot(source: .live(memberB), generation: 9)
   let valid = AudioPacket(
@@ -313,6 +351,28 @@ private func snapshot(
   #expect(AudioPacketFence.accepts(valid, snapshot: room))
   #expect(!AudioPacketFence.accepts(staleGeneration, snapshot: room))
   #expect(!AudioPacketFence.accepts(staleSource, snapshot: room))
+}
+
+private func discoveredRoom(
+  coordinatorID: MemberID,
+  term: UInt64,
+  port: UInt16
+) -> DiscoveredRoom {
+  let endpointPort = NWEndpoint.Port(rawValue: port)!
+  return DiscoveredRoom(
+    descriptor: RoomDescriptor(
+      id: roomID,
+      name: "Office Room",
+      memberCount: 2,
+      sourceName: nil,
+      coordinatorID: coordinatorID,
+      coordinatorTerm: term,
+      controlProtocolVersion: ZeroSoundProtocol.controlVersion,
+      audioProtocolVersion: ZeroSoundProtocol.audioVersion
+    ),
+    endpoint: .hostPort(host: "127.0.0.1", port: endpointPort),
+    audioPort: endpointPort
+  )
 }
 
 @Test func diagnosticsPolicyUsesCentralThresholds() {

@@ -105,18 +105,8 @@ final class RoomDiscovery: @unchecked Sendable {
           endpoint: result.endpoint,
           audioPort: audioPort
         )
-        if let existing = rooms[room.id] {
-          let existingTerm = existing.descriptor.coordinatorTerm
-          if descriptor.coordinatorTerm < existingTerm { continue }
-          if descriptor.coordinatorTerm == existingTerm {
-            let existingCoordinator = existing.descriptor.coordinatorID
-            if descriptor.coordinatorID > existingCoordinator { continue }
-            if descriptor.coordinatorID == existingCoordinator,
-              String(describing: result.endpoint) >= String(describing: existing.endpoint)
-            {
-              continue
-            }
-          }
+        if let existing = rooms[room.id], !Self.prefers(room, over: existing) {
+          continue
         }
         rooms[room.id] = room
       }
@@ -127,6 +117,21 @@ final class RoomDiscovery: @unchecked Sendable {
     }
     browser.start(queue: queue)
     self.browser = browser
+  }
+
+  /// Selects one authoritative advertisement independent of mDNS result ordering. A newer term
+  /// always wins; equal-term conflicts converge on the same coordinator and endpoint everywhere.
+  static func prefers(_ candidate: DiscoveredRoom, over existing: DiscoveredRoom) -> Bool {
+    let candidateTerm = candidate.descriptor.coordinatorTerm
+    let existingTerm = existing.descriptor.coordinatorTerm
+    if candidateTerm != existingTerm { return candidateTerm > existingTerm }
+
+    let candidateCoordinator = candidate.descriptor.coordinatorID
+    let existingCoordinator = existing.descriptor.coordinatorID
+    if candidateCoordinator != existingCoordinator {
+      return candidateCoordinator < existingCoordinator
+    }
+    return String(describing: candidate.endpoint) < String(describing: existing.endpoint)
   }
 
   func stop() {
