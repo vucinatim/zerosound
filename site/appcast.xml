@@ -3,6 +3,21 @@
     <channel>
         <title>ZeroSound</title>
         <item>
+            <title>0.11.4</title>
+            <pubDate>Tue, 11 Aug 2026 16:07:14 +0200</pubDate>
+            <link>https://github.com/vucinatim/zerosound</link>
+            <sparkle:version>17</sparkle:version>
+            <sparkle:shortVersionString>0.11.4</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[# ZeroSound 0.11.4
+
+- Replaces the pre-masked app icon with clean square source artwork so each macOS version can apply
+  its native icon shape without clipped or doubled edges.
+- Keeps the connected-speaker identity clear at every ICNS resolution from 16 to 1024 pixels.
+]]></description>
+            <enclosure url="https://github.com/vucinatim/zerosound/releases/download/v0.11.4/ZeroSound-0.11.4-macOS-universal.zip" length="4436474" type="application/octet-stream" sparkle:edSignature="m0XN1p4flkHAZYXY2bFWvoZOiUqbcT8sZSh8Hj1O49oq0eSQkDOVcNrNasXWRsI5yawUJWfak8HEPlj2EP6/Dw=="/>
+        </item>
+        <item>
             <title>0.11.3</title>
             <pubDate>Tue, 11 Aug 2026 15:57:18 +0200</pubDate>
             <link>https://github.com/vucinatim/zerosound</link>
@@ -99,21 +114,6 @@
   Macs.
 ]]></description>
             <enclosure url="https://github.com/vucinatim/zerosound/releases/download/v0.11.0/ZeroSound-0.11.0-macOS-universal.zip" length="4372373" type="application/octet-stream" sparkle:edSignature="vAK0mMJI9v5cHex9exbcDi50bJnW7UrTyMe9XhXSaz4TwHYJl+xsnp6h6Z1yDvcyxxVeqgNA4BRxsSbG/KHhAg=="/>
-        </item>
-        <item>
-            <title>0.10.1</title>
-            <pubDate>Tue, 11 Aug 2026 11:59:47 +0200</pubDate>
-            <link>https://github.com/vucinatim/zerosound</link>
-            <sparkle:version>12</sparkle:version>
-            <sparkle:shortVersionString>0.10.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <description sparkle:format="markdown"><![CDATA[# ZeroSound 0.10.1
-
-- Corrects the AVAudioPlayerNode timeline origin so scheduled playback no longer enters a false phase-resynchronization loop.
-- Keeps room health in a recovering state while playback phase is still being measured instead of briefly reporting a false Excellent state.
-- Adds regression coverage for player-start scheduling, explicit sample origins, and live-health transitions.
-]]></description>
-            <enclosure url="https://github.com/vucinatim/zerosound/releases/download/v0.10.1/ZeroSound-0.10.1-macOS-universal.zip" length="4166431" type="application/octet-stream" sparkle:edSignature="tJUyaXnaZ7v25KBRzjxpJTcEXM5ZUlzRGohjrm9PFplcA6ziamxIJsEnPwvMzC28H2oKwh75U3oJZHj3aY9cDw=="/>
         </item>
     </channel>
 </rss>
