@@ -3,10 +3,14 @@ import Foundation
 
 @MainActor
 public final class ZeroSoundController: ObservableObject {
-  @Published public private(set) var membership: MembershipState = .discovering
+  @Published public private(set) var membership: MembershipState = .discovering {
+    didSet { refreshRoomHealth() }
+  }
   @Published public private(set) var nearbyRooms: [DiscoveredRoom] = []
   @Published public private(set) var status = "Looking for nearby rooms…"
-  @Published public private(set) var playbackHealth = PlaybackHealth()
+  @Published public private(set) var playbackHealth = PlaybackHealth() {
+    didSet { refreshRoomHealth() }
+  }
   @Published public private(set) var clockOffsetMilliseconds: Double?
   @Published public private(set) var roundTripMilliseconds: Double?
   @Published public private(set) var clockSampleCount = 0
@@ -15,8 +19,11 @@ public final class ZeroSoundController: ObservableObject {
   @Published public private(set) var droppedCaptureFrames: UInt64 = 0
   @Published public private(set) var streamedPacketCount: UInt64 = 0
   @Published public private(set) var capturePeakLevel: Float = 0
-  @Published public private(set) var lastError: String?
-  @Published public private(set) var transportDiagnostics = TransportDiagnostics.idle
+  @Published public private(set) var lastIncident: String?
+  @Published public private(set) var transportDiagnostics = TransportDiagnostics.idle {
+    didSet { refreshRoomHealth() }
+  }
+  @Published public private(set) var roomHealth = RoomHealthAssessment.excellent
 
   public let localMemberID: MemberID
   public let deviceName: String
@@ -32,22 +39,16 @@ public final class ZeroSoundController: ObservableObject {
   public var isLocalCoordinator: Bool { room?.coordinatorID == localMemberID }
   public var isLocalSource: Bool { room?.audioSource.memberID == localMemberID }
   public var isAudioLive: Bool { room?.audioSource.isLive == true }
-  public var healthSeverity: RoomHealthSeverity {
-    guard var room else { return isReconnecting ? .recovering : .excellent }
-    if let localIndex = room.members.firstIndex(where: { $0.id == localMemberID }) {
-      room.members[localIndex].playbackHealth = playbackHealth
-    }
-    return diagnosticsPolicy.evaluate(
-      snapshot: room,
-      reconnecting: isReconnecting,
-      transport: transportDiagnostics
-    )
-  }
+  public var healthSeverity: RoomHealthSeverity { roomHealth.severity }
 
   private let defaults: UserDefaults
   private let discovery = RoomDiscovery()
   private let audioRenderer = SynchronizedAudioRenderer()
   private let diagnosticsPolicy = RoomDiagnosticsPolicy()
+  private var healthStabilizer = RoomHealthStabilizer()
+  private var actionRequiredMessage: String? {
+    didSet { refreshRoomHealth() }
+  }
   private var membershipMachine = MembershipStateMachine()
   private var coordinator: RoomCoordinator?
   private var connection: RoomConnection?
@@ -108,6 +109,7 @@ public final class ZeroSoundController: ObservableObject {
 
   public func createRoom() {
     guard case .outsideRoom = membership else { return }
+    beginDiagnosticsSession()
     operationGeneration &+= 1
     let roomID = RoomID()
     do {
@@ -137,6 +139,7 @@ public final class ZeroSoundController: ObservableObject {
       report("This room needs the same ZeroSound version on every Mac.")
       return
     }
+    beginDiagnosticsSession()
     operationGeneration &+= 1
     do {
       try membershipMachine.beginJoin(roomID: discoveredRoom.id)
@@ -243,6 +246,7 @@ public final class ZeroSoundController: ObservableObject {
       "This Mac: \(deviceName) [\(localMemberID)]",
       "State: \(membershipDescription)",
       "Room health: \(healthSeverity.title)",
+      "Health detail: \(roomHealth.summary)",
       "Status: \(status)",
       "Control transport: \(transportDiagnostics.control.rawValue)",
       "Audio transport: \(transportDiagnostics.audio.rawValue)",
@@ -269,7 +273,8 @@ public final class ZeroSoundController: ObservableObject {
         )
       }
     }
-    if let lastError { lines.append("Last error: \(lastError)") }
+    if let actionRequiredMessage { lines.append("Action required: \(actionRequiredMessage)") }
+    if let lastIncident { lines.append("Last incident: \(lastIncident)") }
     return lines.joined(separator: "\n")
   }
 
@@ -279,6 +284,7 @@ public final class ZeroSoundController: ObservableObject {
 
   private func connect(to discoveredRoom: DiscoveredRoom) {
     connection?.disconnect()
+    resetClockMetrics()
     let connection = RoomConnection(localMember: localMember())
     configure(connection)
     connection.connect(to: discoveredRoom)
@@ -333,6 +339,7 @@ public final class ZeroSoundController: ObservableObject {
     connection = nil
     connectedCoordinatorID = nil
     coordinator?.stop()
+    resetClockMetrics()
     let coordinator = RoomCoordinator(snapshot: snapshot, localMemberID: localMemberID)
     let generation = operationGeneration
     coordinator.onSnapshot = { [weak self] snapshot in
@@ -354,7 +361,11 @@ public final class ZeroSoundController: ObservableObject {
       Task { @MainActor in self?.streamSampleRate = Double(sampleRate) }
     }
     coordinator.onError = { [weak self] message in
-      Task { @MainActor in self?.report(message) }
+      Task { @MainActor in
+        guard let self else { return }
+        self.actionRequiredMessage = message
+        self.report(message)
+      }
     }
     coordinator.onAudioSendDrops = { [weak self] count in
       Task { @MainActor in
@@ -384,6 +395,9 @@ public final class ZeroSoundController: ObservableObject {
       default: return
       }
       membership = membershipMachine.state
+      if let sourceID = snapshot.audioSource.memberID, sourceID != localMemberID {
+        actionRequiredMessage = nil
+      }
       status =
         snapshot.audioSource.isLive
         ? "Playing system audio from \(snapshot.sourceMember?.name ?? "a room member")."
@@ -423,6 +437,7 @@ public final class ZeroSoundController: ObservableObject {
 
   private func startSource(generation: UInt64, announcesPrimed: Bool) {
     stopCaptureAndPlayback()
+    actionRequiredMessage = nil
     do {
       let connection = self.connection
       let coordinator = self.coordinator
@@ -470,13 +485,15 @@ public final class ZeroSoundController: ObservableObject {
         send(.sourcePrimed(memberID: localMemberID, generation: generation))
       }
     } catch {
+      let message = "Audio capture failed: \(error.localizedDescription)"
+      actionRequiredMessage = message
       send(
         .sourceFailed(
           memberID: localMemberID,
           generation: generation,
           reason: error.localizedDescription
         ))
-      report("Audio capture failed: \(error.localizedDescription)")
+      report(message)
     }
   }
 
@@ -490,7 +507,7 @@ public final class ZeroSoundController: ObservableObject {
       return
     }
     if case .reconnecting = membership {
-      lastError = reason
+      lastIncident = reason
       scheduleReconnect()
       return
     }
@@ -503,7 +520,7 @@ public final class ZeroSoundController: ObservableObject {
     try? membershipMachine.connectionLost()
     membership = membershipMachine.state
     status = "Reconnecting to \(snapshot.name)…"
-    lastError = reason
+    lastIncident = reason
 
     var survivors = snapshot.members.filter { $0.id != departedCoordinatorID }
     survivors = survivors.map {
@@ -527,6 +544,7 @@ public final class ZeroSoundController: ObservableObject {
         promoted.coordinatorTerm &+= 1
         promoted.streamGeneration &+= 1
         promoted.audioSource = .idle
+        promoted.resetStreamTelemetry()
       }
       do {
         try becomeCoordinator(with: promoted, completingJoin: true)
@@ -595,24 +613,61 @@ public final class ZeroSoundController: ObservableObject {
     audioStreamer?.stop()
     audioStreamer = nil
     audioRenderer.stop()
-    streamSampleRate = nil
-    capturePeakLevel = 0
+    resetStreamMetrics()
   }
 
   private func clearMetrics() {
-    playbackHealth = PlaybackHealth()
-    clockOffsetMilliseconds = nil
-    roundTripMilliseconds = nil
-    clockSampleCount = 0
-    clockSkewPartsPerMillion = nil
+    resetStreamMetrics()
+    resetClockMetrics()
     transportDiagnostics = .idle
+    lastIncident = nil
+    actionRequiredMessage = nil
+    healthStabilizer.reset()
+    roomHealth = .excellent
+  }
+
+  private func resetStreamMetrics() {
+    playbackHealth = PlaybackHealth()
+    streamSampleRate = nil
     droppedCaptureFrames = 0
     streamedPacketCount = 0
     capturePeakLevel = 0
   }
 
+  private func resetClockMetrics() {
+    clockOffsetMilliseconds = nil
+    roundTripMilliseconds = nil
+    clockSampleCount = 0
+    clockSkewPartsPerMillion = nil
+  }
+
+  private func beginDiagnosticsSession() {
+    clearMetrics()
+  }
+
+  private func refreshRoomHealth() {
+    guard var snapshot = room else {
+      let assessment =
+        isReconnecting
+        ? RoomHealthAssessment(severity: .stabilizing, cause: .reconnecting)
+        : RoomHealthAssessment.excellent
+      roomHealth = healthStabilizer.observe(assessment)
+      return
+    }
+    if let localIndex = snapshot.members.firstIndex(where: { $0.id == localMemberID }) {
+      snapshot.members[localIndex].playbackHealth = playbackHealth
+    }
+    let assessment = diagnosticsPolicy.evaluate(
+      snapshot: snapshot,
+      reconnecting: isReconnecting,
+      transport: transportDiagnostics,
+      actionRequired: actionRequiredMessage
+    )
+    roomHealth = healthStabilizer.observe(assessment)
+  }
+
   private func report(_ message: String) {
-    lastError = message
+    lastIncident = message
     status = message
   }
 

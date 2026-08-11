@@ -436,7 +436,6 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
 
   private func stopOnQueue() {
     isAcceptingAudio = false
-    publishStatisticsIfNeeded(force: true)
     renderGeneration &+= 1
     stopEngine()
     jitterBuffer.reset()
@@ -463,6 +462,7 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     lastStatisticsTime = 0
     lastPhaseObservationNanoseconds = 0
     outputPresentationLatencyNanoseconds = 0
+    onStatistics?(PlaybackHealth())
   }
 
   private func stopEngine() {

@@ -73,6 +73,7 @@ public struct RoomStateMachine: Sendable {
       {
         snapshot.streamGeneration &+= 1
         snapshot.audioSource = .idle
+        snapshot.resetStreamTelemetry()
         events.append(.streamStop(generation: snapshot.streamGeneration, acknowledgement: nil))
       }
       if coordinatorDeparted, let successor = Self.successor(in: snapshot.members) {
@@ -106,6 +107,7 @@ public struct RoomStateMachine: Sendable {
       case .idle, .live:
         snapshot.streamGeneration &+= 1
         snapshot.audioSource = .assigning(memberID)
+        snapshot.resetStreamTelemetry()
         return commit([
           .streamStop(generation: snapshot.streamGeneration, acknowledgement: nil),
           .sourceAssignment(memberID: memberID, generation: snapshot.streamGeneration),
@@ -147,6 +149,7 @@ public struct RoomStateMachine: Sendable {
       .sourceFailed(let memberID, let generation, _):
       try validateSource(memberID, generation: generation, expected: snapshot.audioSource)
       snapshot.audioSource = .idle
+      snapshot.resetStreamTelemetry()
       return commit([
         .streamStop(generation: generation, acknowledgement: nil),
         .snapshot(snapshot),

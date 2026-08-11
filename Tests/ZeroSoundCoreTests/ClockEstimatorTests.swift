@@ -720,7 +720,6 @@ func fourHourVirtualSoakKeepsIndependentClocksInRoomPhase() throws {
   #expect(health.discardedPackets == 0)
   #expect(health.outputLatencyMilliseconds == 0)
   #expect(health.lastRecoveryReason == nil)
-  #expect(!health.requiresAttention)
 }
 
 @Test func transportDiagnosticsDecodeBeforeSendDropsFromOlderReports() throws {
@@ -732,20 +731,17 @@ func fourHourVirtualSoakKeepsIndependentClocksInRoomPhase() throws {
   #expect(diagnostics.audioDatagramsDroppedBeforeSend == 0)
 }
 
-@Test func playbackHealthClearsAttentionAfterAutomaticResynchronization() {
-  let recovering = PlaybackHealth(
-    rendererUnderruns: 1,
-    recentRendererUnderruns: 1
-  )
-  let recovered = PlaybackHealth(
-    rendererUnderruns: 1,
-    resynchronizations: 1,
-    recentRendererUnderruns: 1,
-    recentResynchronizations: 1
-  )
+@Test func stoppingRendererPublishesFreshEmptyTelemetry() async {
+  let renderer = SynchronizedAudioRenderer()
 
-  #expect(recovering.requiresAttention)
-  #expect(!recovered.requiresAttention)
+  let health = await withCheckedContinuation { continuation in
+    renderer.onStatistics = { health in
+      continuation.resume(returning: health)
+    }
+    renderer.stop()
+  }
+
+  #expect(health == PlaybackHealth())
 }
 
 @Test func playbackStateReturnsToRecoveryWhenSelectedAnchorExpires() {

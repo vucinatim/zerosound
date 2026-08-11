@@ -122,6 +122,14 @@ public struct RoomSnapshot: Codable, Hashable, Sendable {
     members = Self.canonical(newMembers)
   }
 
+  /// Starts a new stream telemetry epoch without disturbing member identity or connection state.
+  mutating func resetStreamTelemetry() {
+    for index in members.indices {
+      members[index].playbackHealth = PlaybackHealth()
+      members[index].audioLevel = 0
+    }
+  }
+
   mutating func rename(to newName: String) {
     name = Self.clean(newName)
   }

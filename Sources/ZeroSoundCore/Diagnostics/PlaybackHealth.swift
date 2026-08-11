@@ -60,16 +60,6 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
     self.lastRecoveryReason = lastRecoveryReason
   }
 
-  public var hasContinuityIssues: Bool {
-    recentMissingPackets > 0 || recentLatePackets > 0 || recentRendererUnderruns > 0
-      || abs(phaseErrorMilliseconds ?? 0) >= 2
-  }
-
-  public var requiresAttention: Bool {
-    recentRendererUnderruns > recentResynchronizations
-      || abs(phaseErrorMilliseconds ?? 0) >= 20
-  }
-
   private enum CodingKeys: String, CodingKey {
     case missingPackets
     case latePackets

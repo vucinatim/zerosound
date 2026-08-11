@@ -10,6 +10,10 @@ dedicated UDP audio and continuously reconciles playback against the current roo
 remaining release gate is measured two/five/eight-Mac office validation and update testing, not more
 transport architecture.
 
+The consequence-based diagnostics architecture is specified in
+[`docs/v0.12-diagnostics-system.md`](docs/v0.12-diagnostics-system.md). Raw telemetry, derived room
+health, presentation hysteresis, and stream metric lifecycles now have separate responsibilities.
+
 The room domain, typed protocol, coordinator recovery, transferable audio path, diagnostics policy,
 Core Audio pipeline, and release tooling now have clean ownership boundaries. These are intentionally
 deferred product-level investments rather than shortcuts inside the v0.8 architecture.

@@ -3,7 +3,7 @@ import Foundation
 public enum ZeroSoundProtocol {
   public static let controlVersion: UInt16 = 10
   public static let audioVersion: UInt8 = 2
-  public static let appVersion = "0.11.0"
+  public static let appVersion = "0.11.1"
   public static let serviceType = "_zerosound-room._tcp"
 }
 

@@ -168,6 +168,29 @@ private func snapshot(
   }
 }
 
+@Test func newStreamGenerationStartsAFreshTelemetryEpoch() throws {
+  let staleHealth = PlaybackHealth(
+    missingPackets: 371,
+    rendererUnderruns: 4,
+    recentMissingPackets: 29,
+    recentRendererUnderruns: 1
+  )
+  let measured = RoomMember(
+    id: memberA,
+    name: "A",
+    connection: .ready,
+    playbackHealth: staleHealth,
+    audioLevel: 0.8
+  )
+  var room = RoomStateMachine(snapshot: snapshot(members: [measured]))
+
+  _ = try room.handle(.requestSource(memberA))
+
+  let reset = try #require(room.snapshot.members.first)
+  #expect(reset.playbackHealth == PlaybackHealth())
+  #expect(reset.audioLevel == 0)
+}
+
 @Test func sourceFailureReturnsRoomToIdle() throws {
   var room = RoomStateMachine(snapshot: snapshot())
   _ = try room.handle(.requestSource(memberA))
@@ -375,25 +398,39 @@ private func discoveredRoom(
   )
 }
 
-@Test func diagnosticsPolicyUsesCentralThresholds() {
+@Test func diagnosticsPolicyMeasuresConsequencesInsteadOfRawNetworkImperfections() {
   let policy = RoomDiagnosticsPolicy()
-  #expect(policy.evaluate(snapshot: snapshot()) == .excellent)
+  #expect(policy.evaluate(snapshot: snapshot()).severity == .excellent)
 
-  let mild = RoomMember(
+  let handledLoss = RoomMember(
     id: memberA, name: "A", connection: .ready,
     playbackHealth: PlaybackHealth(
-      reorderedPackets: 1,
-      recentReorderedPackets: 1
+      missingPackets: 500,
+      reorderedPackets: 40,
+      bufferDepthMilliseconds: 260,
+      phaseErrorMilliseconds: 0,
+      recentMissingPackets: 50,
+      recentReorderedPackets: 4
     ))
-  #expect(policy.evaluate(snapshot: snapshot(members: [mild])) == .good)
+  #expect(
+    policy.evaluate(snapshot: snapshot(members: [handledLoss], source: .live(memberA))).severity
+      == .excellent
+  )
 
   let recovering = RoomMember(
     id: memberA, name: "A", connection: .ready,
     playbackHealth: PlaybackHealth(
       rendererUnderruns: 1,
-      recentRendererUnderruns: 1
+      resynchronizations: 1,
+      bufferDepthMilliseconds: 260,
+      phaseErrorMilliseconds: 0,
+      recentRendererUnderruns: 1,
+      recentResynchronizations: 1
     ))
-  #expect(policy.evaluate(snapshot: snapshot(members: [recovering])) == .recovering)
+  #expect(
+    policy.evaluate(snapshot: snapshot(members: [recovering], source: .live(memberA))).severity
+      == .stabilizing
+  )
 
   let broken = RoomMember(
     id: memberA, name: "A", connection: .ready,
@@ -403,7 +440,10 @@ private func discoveredRoom(
       recentRendererUnderruns: 4,
       recentResynchronizations: 1
     ))
-  #expect(policy.evaluate(snapshot: snapshot(members: [broken])) == .needsAttention)
+  #expect(
+    policy.evaluate(snapshot: snapshot(members: [broken], source: .live(memberA))).severity
+      == .degraded
+  )
 }
 
 @Test func diagnosticsPolicyNeverCallsUnmeasuredLivePlaybackExcellent() {
@@ -415,8 +455,8 @@ private func discoveredRoom(
     playbackHealth: PlaybackHealth(bufferDepthMilliseconds: 260)
   )
   #expect(
-    policy.evaluate(snapshot: snapshot(members: [unmeasured], source: .live(memberA)))
-      == .recovering
+    policy.evaluate(snapshot: snapshot(members: [unmeasured], source: .live(memberA))).severity
+      == .stabilizing
   )
 
   let synchronized = RoomMember(
@@ -429,9 +469,64 @@ private func discoveredRoom(
     )
   )
   #expect(
-    policy.evaluate(snapshot: snapshot(members: [synchronized], source: .live(memberA)))
+    policy.evaluate(snapshot: snapshot(members: [synchronized], source: .live(memberA))).severity
       == .excellent
   )
+}
+
+@Test func diagnosticsPolicyIgnoresPreviousStreamTelemetryWhileRoomIsIdle() {
+  let stale = RoomMember(
+    id: memberA,
+    name: "A",
+    connection: .ready,
+    playbackHealth: PlaybackHealth(
+      missingPackets: 371,
+      rendererUnderruns: 4,
+      resynchronizations: 3,
+      recentMissingPackets: 29,
+      recentRendererUnderruns: 1
+    )
+  )
+
+  let assessment = RoomDiagnosticsPolicy().evaluate(snapshot: snapshot(members: [stale]))
+  #expect(assessment == .excellent)
+}
+
+@Test func diagnosticsPolicyReservesActionNeededForExplicitBlockingFailures() {
+  let assessment = RoomDiagnosticsPolicy().evaluate(
+    snapshot: snapshot(),
+    actionRequired: "Allow system audio recording in System Settings."
+  )
+
+  #expect(assessment.severity == .actionRequired)
+  #expect(assessment.summary == "Allow system audio recording in System Settings.")
+}
+
+@Test func diagnosticsPolicyTreatsAutomaticAudioPathReplacementAsStabilizing() {
+  let assessment = RoomDiagnosticsPolicy().evaluate(
+    snapshot: snapshot(),
+    transport: TransportDiagnostics(
+      control: .ready,
+      audio: .degraded,
+      joinStage: "Replacing audio path"
+    )
+  )
+
+  #expect(assessment.severity == .stabilizing)
+  #expect(assessment.cause == .restoringTransport)
+}
+
+@Test func roomHealthStabilizerPreventsRapidRecoveryOscillation() {
+  var stabilizer = RoomHealthStabilizer(recoveryObservations: 3)
+  let degraded = RoomHealthAssessment(severity: .degraded, cause: .playbackInterrupted)
+  let recovering = RoomHealthAssessment(severity: .stabilizing, cause: .automaticRecovery)
+  let stable = RoomHealthAssessment(severity: .excellent, cause: .playbackStable)
+
+  #expect(stabilizer.observe(degraded).severity == .degraded)
+  #expect(stabilizer.observe(recovering).severity == .stabilizing)
+  #expect(stabilizer.observe(stable).severity == .stabilizing)
+  #expect(stabilizer.observe(stable).severity == .stabilizing)
+  #expect(stabilizer.observe(stable).severity == .excellent)
 }
 
 @Test func inProcessRoomIntegrationSurvivesFaultsTransferReconnectAndElection() throws {

@@ -14,7 +14,7 @@ struct RoomDiagnosticsView: View {
           HStack {
             VStack(alignment: .leading, spacing: 4) {
               Text(controller.healthSeverity.title).font(.title2.bold())
-              Text(healthSummary).foregroundStyle(.secondary)
+              Text(controller.roomHealth.summary).foregroundStyle(.secondary)
             }
             Spacer()
             HealthBadge(severity: controller.healthSeverity)
@@ -153,12 +153,4 @@ struct RoomDiagnosticsView: View {
       ?? "Phase measuring"
   }
 
-  private var healthSummary: String {
-    switch controller.healthSeverity {
-    case .excellent: "All speakers are synchronized and stable."
-    case .good: "Minor network variation is being absorbed."
-    case .recovering: "ZeroSound is correcting a temporary interruption."
-    case .needsAttention: "One or more speakers cannot maintain playback."
-    }
-  }
 }

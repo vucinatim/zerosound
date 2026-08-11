@@ -7,9 +7,9 @@ enum RoomPalette {
   static func health(_ severity: RoomHealthSeverity) -> Color {
     switch severity {
     case .excellent: .green
-    case .good: accent
-    case .recovering: .orange
-    case .needsAttention: .red
+    case .stabilizing: accent
+    case .degraded: .orange
+    case .actionRequired: .red
     }
   }
 }
