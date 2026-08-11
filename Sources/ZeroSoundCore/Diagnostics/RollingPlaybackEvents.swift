@@ -2,6 +2,7 @@ import Foundation
 
 struct PlaybackEventCounters: Equatable, Sendable {
   var missingPackets: UInt64 = 0
+  var concealedFrames: UInt64 = 0
   var latePackets: UInt64 = 0
   var reorderedPackets: UInt64 = 0
   var rendererUnderruns: UInt64 = 0
@@ -28,6 +29,7 @@ struct RollingPlaybackEvents: Equatable, Sendable {
   ) -> PlaybackEventCounters {
     let delta = PlaybackEventCounters(
       missingPackets: increment(from: previous.missingPackets, to: cumulative.missingPackets),
+      concealedFrames: increment(from: previous.concealedFrames, to: cumulative.concealedFrames),
       latePackets: increment(from: previous.latePackets, to: cumulative.latePackets),
       reorderedPackets: increment(
         from: previous.reorderedPackets,
@@ -53,6 +55,7 @@ struct RollingPlaybackEvents: Equatable, Sendable {
     events.removeAll { $0.timestampNanoseconds < cutoff }
     return events.reduce(into: PlaybackEventCounters()) { total, event in
       total.missingPackets &+= event.counters.missingPackets
+      total.concealedFrames &+= event.counters.concealedFrames
       total.latePackets &+= event.counters.latePackets
       total.reorderedPackets &+= event.counters.reorderedPackets
       total.rendererUnderruns &+= event.counters.rendererUnderruns

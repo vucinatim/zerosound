@@ -401,6 +401,7 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     let recent = rollingEvents.observe(
       PlaybackEventCounters(
         missingPackets: jitter.missingPackets,
+        concealedFrames: jitter.concealedFrames,
         latePackets: jitter.latePackets,
         reorderedPackets: jitter.reorderedPackets,
         rendererUnderruns: rendererUnderruns,
@@ -410,6 +411,9 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     )
     let sampleRate = configuredSampleRate.map(Double.init) ?? 0
     let bufferDepth = sampleRate > 0 ? Double(scheduledFrames) * 1_000 / sampleRate : 0
+    let concealedAudio = sampleRate > 0 ? Double(jitter.concealedFrames) * 1_000 / sampleRate : 0
+    let recentConcealedAudio =
+      sampleRate > 0 ? Double(recent.concealedFrames) * 1_000 / sampleRate : 0
     onStatistics?(
       PlaybackHealth(
         missingPackets: jitter.missingPackets,
@@ -423,6 +427,8 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
         playbackRatePartsPerMillion: (phaseController.playbackRate - 1) * 1_000_000,
         phaseErrorMilliseconds: phaseController.phaseErrorMilliseconds,
         outputLatencyMilliseconds: Double(outputPresentationLatencyNanoseconds) / 1_000_000,
+        concealedAudioMilliseconds: concealedAudio,
+        recentConcealedAudioMilliseconds: recentConcealedAudio,
         recentMissingPackets: recent.missingPackets,
         recentLatePackets: recent.latePackets,
         recentReorderedPackets: recent.reorderedPackets,

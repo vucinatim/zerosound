@@ -28,7 +28,7 @@ final class UDPAudioRouter: @unchecked Sendable {
 
   private struct Peer {
     let connection: NWConnection
-    var audioSendQueue = LatestValueSendQueue<Data>()
+    var audioSendWindow = BoundedDatagramSendWindow()
   }
 
   private let queue = DispatchQueue(
@@ -254,16 +254,15 @@ final class UDPAudioRouter: @unchecked Sendable {
 
   private func enqueueAudio(_ data: Data, for memberID: MemberID) {
     guard var peer = peers[memberID] else { return }
-    let previousDrops = peer.audioSendQueue.droppedValues
-    let immediate = peer.audioSendQueue.enqueue(data)
-    if peer.audioSendQueue.droppedValues != previousDrops {
-      droppedAudioDatagrams &+= peer.audioSendQueue.droppedValues &- previousDrops
+    let previousDrops = peer.audioSendWindow.droppedDatagrams
+    let admitted = peer.audioSendWindow.beginSend()
+    if peer.audioSendWindow.droppedDatagrams != previousDrops {
+      droppedAudioDatagrams &+= peer.audioSendWindow.droppedDatagrams &- previousDrops
       scheduleDropReport()
     }
     peers[memberID] = peer
-    if let immediate {
-      sendAudioNow(immediate, to: memberID, on: peer.connection)
-    }
+    guard admitted else { return }
+    sendAudioNow(data, to: memberID, on: peer.connection)
   }
 
   private func routeAudioOnQueue(_ packet: AudioPacket, from memberID: MemberID) {
@@ -315,14 +314,10 @@ final class UDPAudioRouter: @unchecked Sendable {
         guard let self, let connection else { return }
         self.queue.async {
           guard var peer = self.peers[memberID], peer.connection === connection else { return }
+          peer.audioSendWindow.completeSend()
+          self.peers[memberID] = peer
           if error != nil {
             self.remove(connection)
-            return
-          }
-          let next = peer.audioSendQueue.didComplete()
-          self.peers[memberID] = peer
-          if let next {
-            self.sendAudioNow(next, to: memberID, on: connection)
           }
         }
       })

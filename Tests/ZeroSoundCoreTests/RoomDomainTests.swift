@@ -409,12 +409,27 @@ private func discoveredRoom(
       reorderedPackets: 40,
       bufferDepthMilliseconds: 260,
       phaseErrorMilliseconds: 0,
+      recentConcealedAudioMilliseconds: 95,
       recentMissingPackets: 50,
       recentReorderedPackets: 4
     ))
   #expect(
     policy.evaluate(snapshot: snapshot(members: [handledLoss], source: .live(memberA))).severity
       == .excellent
+  )
+
+  let audibleConcealment = RoomMember(
+    id: memberA, name: "A", connection: .ready,
+    playbackHealth: PlaybackHealth(
+      missingPackets: 500,
+      bufferDepthMilliseconds: 260,
+      phaseErrorMilliseconds: 0,
+      recentConcealedAudioMilliseconds: 100,
+      recentMissingPackets: 50
+    ))
+  #expect(
+    policy.evaluate(snapshot: snapshot(members: [audibleConcealment], source: .live(memberA)))
+      .severity == .degraded
   )
 
   let recovering = RoomMember(

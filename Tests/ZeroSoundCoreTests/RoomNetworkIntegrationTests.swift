@@ -375,6 +375,83 @@ func saturatedAudioPlaneDoesNotDelayReliableRoomControl() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func productionRateAudioSubmissionsDoNotCreateLocalSequenceGaps() async throws {
+  let coordinatorID = MemberID()
+  let memberID = MemberID()
+  let coordinator = RoomCoordinator(
+    snapshot: RoomSnapshot(
+      id: RoomID(),
+      name: "Datagram Cadence Test",
+      coordinatorID: coordinatorID,
+      members: [RoomMember(id: coordinatorID, name: "Coordinator", connection: .ready)]
+    ),
+    localMemberID: coordinatorID,
+    advertisesRoom: false
+  )
+  let member = RoomConnection(localMember: RoomMember(id: memberID, name: "Member"))
+  let (snapshots, snapshotContinuation) = AsyncStream<RoomSnapshot>.makeStream()
+  let (receivedSequences, sequenceContinuation) = AsyncStream<UInt32>.makeStream()
+  let (sendDrops, dropContinuation) = AsyncStream<UInt64>.makeStream()
+  let (clockSamples, clockContinuation) = AsyncStream<Int>.makeStream()
+  coordinator.onSnapshot = { snapshotContinuation.yield($0) }
+  coordinator.onAudioSendDrops = { dropContinuation.yield($0) }
+  coordinator.onEvent = { event in
+    switch event {
+    case .sourceAssignment(let sourceID, let generation) where sourceID == coordinatorID:
+      coordinator.submitLocal(.sourcePrimed(memberID: coordinatorID, generation: generation))
+    case .streamStart(let sourceID, let generation, _) where sourceID == coordinatorID:
+      coordinator.submitLocal(.sourceLive(memberID: coordinatorID, generation: generation))
+    default:
+      break
+    }
+  }
+  member.onAudio = { packet, _ in sequenceContinuation.yield(packet.sequence) }
+  member.onClock = { _, _, sampleCount, _ in clockContinuation.yield(sampleCount) }
+  coordinator.onReady = { member.connect(to: $0) }
+  try coordinator.start()
+  #expect(await nextSnapshot(in: snapshots) { $0.contains(memberID) } != nil)
+  #expect(await nextValue(in: clockSamples) { $0 >= 4 } != nil)
+  coordinator.submitLocal(.requestSource(coordinatorID))
+  let live = try #require(
+    await nextSnapshot(in: snapshots) { $0.audioSource == .live(coordinatorID) })
+
+  let receiveTask = Task { () -> [UInt32] in
+    var received: [UInt32] = []
+    for await sequence in receivedSequences {
+      received.append(sequence)
+      if received.count == 400 { return received }
+    }
+    return received
+  }
+  let firstPresentation = MonotonicTime.nowNanoseconds() + 300_000_000
+  for sequence in UInt32(1)...400 {
+    coordinator.broadcastAudio(
+      AudioPacket(
+        sequence: sequence,
+        presentationNanoseconds: firstPresentation + UInt64(sequence - 1) * 5_000_000,
+        sampleRate: 48_000,
+        streamGeneration: live.streamGeneration,
+        sourceID: coordinatorID,
+        floatSamples: [Float](repeating: 0.1, count: SystemAudioStreamer.packetFrames * 2)
+      ))
+    try await Task.sleep(for: .milliseconds(1))
+  }
+
+  try await Task.sleep(for: .seconds(1))
+  sequenceContinuation.finish()
+  let received = await receiveTask.value
+  #expect(received == Array(UInt32(1)...400))
+  dropContinuation.finish()
+  let reportedDrop = await nextValue(in: sendDrops) { $0 > 0 }
+  #expect(reportedDrop == nil)
+
+  member.disconnect()
+  coordinator.stop()
+  snapshotContinuation.finish()
+  clockContinuation.finish()
+}
+
+@Test(.timeLimit(.minutes(1)))
 func splitTransportSupportsEightMembersSourceTransferAndCoordinatorExit() async throws {
   let coordinatorID = MemberID()
   let roomID = RoomID()

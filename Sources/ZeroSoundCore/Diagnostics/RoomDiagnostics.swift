@@ -71,6 +71,10 @@ public struct RoomHealthAssessment: Equatable, Sendable {
 /// Packet loss and reordering remain telemetry unless they cause an underrun, failed recovery, or
 /// sustained synchronization error.
 public struct RoomDiagnosticsPolicy: Sendable {
+  /// More than one percent concealed audio in the rolling ten-second window is user-audible
+  /// continuity damage, even when the renderer successfully avoids a hard underrun.
+  static let degradedConcealedAudioMilliseconds = 100.0
+
   public init() {}
 
   public func evaluate(
@@ -114,6 +118,7 @@ public struct RoomDiagnosticsPolicy: Sendable {
     let health = snapshot.members.map(\.playbackHealth)
     if health.contains(where: {
       $0.recentRendererUnderruns > $0.recentResynchronizations + 1
+        || $0.recentConcealedAudioMilliseconds >= Self.degradedConcealedAudioMilliseconds
         || abs($0.phaseErrorMilliseconds ?? 0) >= 20
         || ($0.phaseErrorMilliseconds != nil && $0.bufferDepthMilliseconds < 40)
     }) {

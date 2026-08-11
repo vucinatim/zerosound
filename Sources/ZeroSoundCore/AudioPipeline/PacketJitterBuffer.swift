@@ -18,6 +18,7 @@ struct RenderChunk: Sendable {
 
 struct JitterBufferStatistics: Equatable, Sendable {
   var missingPackets: UInt64 = 0
+  var concealedFrames: UInt64 = 0
   var latePackets: UInt64 = 0
   var reorderedPackets: UInt64 = 0
   var duplicatePackets: UInt64 = 0
@@ -25,12 +26,8 @@ struct JitterBufferStatistics: Equatable, Sendable {
 
 struct PacketJitterBuffer: Sendable {
   static let schedulingLeadNanoseconds: UInt64 = 25_000_000
-  static let defaultStartupHoldNanoseconds: UInt64 = 15_000_000
-  static let defaultReorderHoldNanoseconds: UInt64 = 20_000_000
 
   private let maximumPendingPackets: Int
-  private let startupHoldNanoseconds: UInt64
-  private let reorderHoldNanoseconds: UInt64
   private var pending: [UInt32: TimedAudioPacket] = [:]
   private var nextSequence: UInt32?
   private var nextPresentationNanoseconds: UInt64?
@@ -45,14 +42,8 @@ struct PacketJitterBuffer: Sendable {
 
   private(set) var statistics = JitterBufferStatistics()
 
-  init(
-    maximumPendingPackets: Int = 256,
-    startupHoldNanoseconds: UInt64 = Self.defaultStartupHoldNanoseconds,
-    reorderHoldNanoseconds: UInt64 = Self.defaultReorderHoldNanoseconds
-  ) {
+  init(maximumPendingPackets: Int = 256) {
     self.maximumPendingPackets = max(8, maximumPendingPackets)
-    self.startupHoldNanoseconds = startupHoldNanoseconds
-    self.reorderHoldNanoseconds = reorderHoldNanoseconds
   }
 
   mutating func insert(
@@ -64,11 +55,9 @@ struct PacketJitterBuffer: Sendable {
 
     if nextSequence == nil {
       configureTimeline(from: timedPacket)
-      startupDeadlineNanoseconds = nowNanoseconds &+ startupHoldNanoseconds
     } else if packet.sampleRate != sampleRate || packet.frameCount != frameCount {
       reset()
       configureTimeline(from: timedPacket)
-      startupDeadlineNanoseconds = nowNanoseconds &+ startupHoldNanoseconds
     }
 
     guard let expected = nextSequence else { return [] }
@@ -81,6 +70,9 @@ struct PacketJitterBuffer: Sendable {
       }
       nextSequence = packet.sequence
       nextPresentationNanoseconds = timedPacket.localPresentationNanoseconds
+      startupDeadlineNanoseconds = decisionDeadline(
+        forPresentationNanoseconds: timedPacket.localPresentationNanoseconds
+      )
       distance = 0
     } else if distance >= UInt32.max / 2 {
       statistics.latePackets &+= 1
@@ -110,14 +102,17 @@ struct PacketJitterBuffer: Sendable {
     }
 
     pending[packet.sequence] = timedPacket
-    if !hasStarted {
-      guard nowNanoseconds >= startupDeadlineNanoseconds ?? 0 else { return [] }
-      hasStarted = true
-    }
     return drain(nowNanoseconds: nowNanoseconds)
   }
 
   mutating func drain(nowNanoseconds: UInt64) -> [RenderChunk] {
+    if !hasStarted {
+      guard nextSequence != nil,
+        nowNanoseconds >= startupDeadlineNanoseconds ?? 0
+      else { return [] }
+      hasStarted = true
+    }
+
     var output: [RenderChunk] = []
 
     while let expected = nextSequence,
@@ -136,12 +131,9 @@ struct PacketJitterBuffer: Sendable {
       }
 
       if gapDeadlineNanoseconds == nil {
-        let reorderDeadline = nowNanoseconds &+ reorderHoldNanoseconds
-        let schedulingDeadline =
-          presentation > Self.schedulingLeadNanoseconds
-          ? presentation - Self.schedulingLeadNanoseconds
-          : 0
-        gapDeadlineNanoseconds = min(reorderDeadline, schedulingDeadline)
+        gapDeadlineNanoseconds = decisionDeadline(
+          forPresentationNanoseconds: presentation
+        )
       }
       guard nowNanoseconds >= gapDeadlineNanoseconds ?? 0 else { break }
 
@@ -177,6 +169,9 @@ struct PacketJitterBuffer: Sendable {
     sampleRate = packet.sampleRate
     packetDurationNanoseconds = UInt64(
       (Double(packet.frameCount) * 1_000_000_000 / Double(packet.sampleRate)).rounded()
+    )
+    startupDeadlineNanoseconds = decisionDeadline(
+      forPresentationNanoseconds: timedPacket.localPresentationNanoseconds
     )
   }
 
@@ -240,6 +235,7 @@ struct PacketJitterBuffer: Sendable {
       (chunk.samples[chunk.samples.count - 2], chunk.samples[chunk.samples.count - 1])
     }
     statistics.missingPackets &+= UInt64(count)
+    statistics.concealedFrames &+= UInt64(count * frameCount)
     for _ in 0..<count {
       advanceTimeline()
     }
@@ -258,6 +254,16 @@ struct PacketJitterBuffer: Sendable {
     nextPresentationNanoseconds = nextPresentationNanoseconds.map {
       $0 &+ packetDurationNanoseconds
     }
+  }
+
+  /// The last instant at which a scheduling decision can be made without risking an underrun.
+  ///
+  /// Packets are intentionally allowed to reorder for the entire available playout budget. A
+  /// short wall-clock timeout would discard delayed packets even while hundreds of milliseconds
+  /// of already-buffered audio remain available.
+  private func decisionDeadline(forPresentationNanoseconds presentation: UInt64) -> UInt64 {
+    presentation > Self.schedulingLeadNanoseconds
+      ? presentation - Self.schedulingLeadNanoseconds : 0
   }
 }
 

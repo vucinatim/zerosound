@@ -12,6 +12,8 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
   public let playbackRatePartsPerMillion: Double
   public let phaseErrorMilliseconds: Double?
   public let outputLatencyMilliseconds: Double
+  public let concealedAudioMilliseconds: Double
+  public let recentConcealedAudioMilliseconds: Double
   public let recentMissingPackets: UInt64
   public let recentLatePackets: UInt64
   public let recentReorderedPackets: UInt64
@@ -32,6 +34,8 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
     playbackRatePartsPerMillion: Double = 0,
     phaseErrorMilliseconds: Double? = nil,
     outputLatencyMilliseconds: Double = 0,
+    concealedAudioMilliseconds: Double = 0,
+    recentConcealedAudioMilliseconds: Double = 0,
     recentMissingPackets: UInt64 = 0,
     recentLatePackets: UInt64 = 0,
     recentReorderedPackets: UInt64 = 0,
@@ -51,6 +55,8 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
     self.playbackRatePartsPerMillion = playbackRatePartsPerMillion
     self.phaseErrorMilliseconds = phaseErrorMilliseconds
     self.outputLatencyMilliseconds = outputLatencyMilliseconds
+    self.concealedAudioMilliseconds = concealedAudioMilliseconds
+    self.recentConcealedAudioMilliseconds = recentConcealedAudioMilliseconds
     self.recentMissingPackets = recentMissingPackets
     self.recentLatePackets = recentLatePackets
     self.recentReorderedPackets = recentReorderedPackets
@@ -72,6 +78,8 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
     case playbackRatePartsPerMillion
     case phaseErrorMilliseconds
     case outputLatencyMilliseconds
+    case concealedAudioMilliseconds
+    case recentConcealedAudioMilliseconds
     case recentMissingPackets
     case recentLatePackets
     case recentReorderedPackets
@@ -99,6 +107,10 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
       try values.decodeIfPresent(Double.self, forKey: .phaseErrorMilliseconds)
     outputLatencyMilliseconds =
       try values.decodeIfPresent(Double.self, forKey: .outputLatencyMilliseconds) ?? 0
+    concealedAudioMilliseconds =
+      try values.decodeIfPresent(Double.self, forKey: .concealedAudioMilliseconds) ?? 0
+    recentConcealedAudioMilliseconds =
+      try values.decodeIfPresent(Double.self, forKey: .recentConcealedAudioMilliseconds) ?? 0
     recentMissingPackets =
       try values.decodeIfPresent(UInt64.self, forKey: .recentMissingPackets) ?? 0
     recentLatePackets =
@@ -127,6 +139,8 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
     try values.encode(playbackRatePartsPerMillion, forKey: .playbackRatePartsPerMillion)
     try values.encodeIfPresent(phaseErrorMilliseconds, forKey: .phaseErrorMilliseconds)
     try values.encode(outputLatencyMilliseconds, forKey: .outputLatencyMilliseconds)
+    try values.encode(concealedAudioMilliseconds, forKey: .concealedAudioMilliseconds)
+    try values.encode(recentConcealedAudioMilliseconds, forKey: .recentConcealedAudioMilliseconds)
     try values.encode(recentMissingPackets, forKey: .recentMissingPackets)
     try values.encode(recentLatePackets, forKey: .recentLatePackets)
     try values.encode(recentReorderedPackets, forKey: .recentReorderedPackets)

@@ -195,20 +195,28 @@ import Testing
   #expect(!expiredTokenAccepted)
 }
 
-@Test func realTimeSendQueueIsBoundedAndKeepsOnlyTheNewestPendingPacket() {
-  var queue = LatestValueSendQueue<Int>()
+@Test func datagramSendWindowAllowsConcurrencyAndRemainsStrictlyBounded() {
+  var window = BoundedDatagramSendWindow(maximumInFlight: 2)
 
-  #expect(queue.enqueue(1) == 1)
-  #expect(queue.enqueue(2) == nil)
-  #expect(queue.enqueue(3) == nil)
-  #expect(queue.droppedValues == 1)
-  #expect(queue.didComplete() == 3)
-  #expect(queue.didComplete() == nil)
-  #expect(queue.enqueue(4) == 4)
+  let first = window.beginSend()
+  let second = window.beginSend()
+  let rejected = window.beginSend()
+  #expect(first)
+  #expect(second)
+  #expect(!rejected)
+  #expect(window.inFlight == 2)
+  #expect(window.droppedDatagrams == 1)
+  window.completeSend()
+  let replacement = window.beginSend()
+  #expect(replacement)
+  #expect(window.inFlight == 2)
+  window.reset()
+  #expect(window.inFlight == 0)
+  #expect(window.droppedDatagrams == 1)
 }
 
 @Test func jitterBufferReordersPacketsWithoutBreakingContinuity() {
-  var buffer = PacketJitterBuffer(startupHoldNanoseconds: 0)
+  var buffer = PacketJitterBuffer()
   let start: UInt64 = 1_000_000_000
 
   let first = buffer.insert(timedPacket(sequence: 10, presentation: start), nowNanoseconds: 0)
@@ -220,22 +228,27 @@ import Testing
     timedPacket(sequence: 11, presentation: start + 5_000_000),
     nowNanoseconds: 2
   )
+  let ready = buffer.drain(
+    nowNanoseconds: start - PacketJitterBuffer.schedulingLeadNanoseconds
+  )
 
-  #expect(first.map(\.sequence) == [10])
+  #expect(first.isEmpty)
   #expect(third.isEmpty)
-  #expect(reordered.map(\.sequence) == [11, 12])
+  #expect(reordered.isEmpty)
+  #expect(ready.map(\.sequence) == [10, 11, 12])
   #expect(buffer.statistics.reorderedPackets == 1)
   #expect(buffer.statistics.missingPackets == 0)
 }
 
 @Test func jitterBufferConcealsMissingPacketBeforePlaybackDeadline() {
-  var buffer = PacketJitterBuffer(startupHoldNanoseconds: 0)
+  var buffer = PacketJitterBuffer()
   let start: UInt64 = 1_000_000_000
 
   _ = buffer.insert(timedPacket(sequence: 20, presentation: start), nowNanoseconds: 0)
+  _ = buffer.drain(nowNanoseconds: start - PacketJitterBuffer.schedulingLeadNanoseconds)
   let early = buffer.insert(
     timedPacket(sequence: 22, presentation: start + 10_000_000, sample: 12_000),
-    nowNanoseconds: start - 100_000_000
+    nowNanoseconds: start - 24_000_000
   )
   let recovered = buffer.drain(
     nowNanoseconds: start + 5_000_000 - PacketJitterBuffer.schedulingLeadNanoseconds
@@ -246,70 +259,120 @@ import Testing
   #expect(recovered[0].isConcealed)
   #expect(!recovered[1].isConcealed)
   #expect(buffer.statistics.missingPackets == 1)
+  #expect(buffer.statistics.concealedFrames == 240)
 }
 
-@Test func jitterBufferConcealsLossAfterShortReorderWindowWithoutDrainingSafetyBuffer() {
-  var buffer = PacketJitterBuffer(
-    startupHoldNanoseconds: 0,
-    reorderHoldNanoseconds: 20_000_000
-  )
+@Test func jitterBufferUsesAvailablePlayoutBudgetForDelayedPackets() {
+  var buffer = PacketJitterBuffer()
   let presentation: UInt64 = 1_000_000_000
 
   _ = buffer.insert(timedPacket(sequence: 20, presentation: presentation), nowNanoseconds: 0)
-  let gapDetected = buffer.insert(
-    timedPacket(sequence: 22, presentation: presentation + 10_000_000),
-    nowNanoseconds: 100_000_000
-  )
-  let stillWaiting = buffer.drain(nowNanoseconds: 119_999_999)
-  let recovered = buffer.drain(nowNanoseconds: 120_000_000)
-
-  #expect(gapDetected.isEmpty)
-  #expect(stillWaiting.isEmpty)
-  #expect(recovered.map(\.sequence) == [21, 22])
-  #expect(buffer.statistics.missingPackets == 1)
-  #expect(presentation - 120_000_000 == 880_000_000)
-}
-
-@Test func jitterBufferAcceptsReorderedPacketBeforeGapDeadline() {
-  var buffer = PacketJitterBuffer(
-    startupHoldNanoseconds: 0,
-    reorderHoldNanoseconds: 20_000_000
-  )
-  let presentation: UInt64 = 1_000_000_000
-
-  _ = buffer.insert(timedPacket(sequence: 30, presentation: presentation), nowNanoseconds: 0)
   _ = buffer.insert(
-    timedPacket(sequence: 32, presentation: presentation + 10_000_000),
-    nowNanoseconds: 100_000_000
+    timedPacket(sequence: 22, presentation: presentation + 10_000_000),
+    nowNanoseconds: presentation - 200_000_000
   )
-  let recovered = buffer.insert(
-    timedPacket(sequence: 31, presentation: presentation + 5_000_000),
-    nowNanoseconds: 115_000_000
+  _ = buffer.insert(
+    timedPacket(sequence: 21, presentation: presentation + 5_000_000),
+    nowNanoseconds: presentation - 30_000_000
+  )
+  let recovered = buffer.drain(
+    nowNanoseconds: presentation - PacketJitterBuffer.schedulingLeadNanoseconds
   )
 
-  #expect(recovered.map(\.sequence) == [31, 32])
+  #expect(recovered.map(\.sequence) == [20, 21, 22])
   #expect(recovered.allSatisfy { !$0.isConcealed })
   #expect(buffer.statistics.missingPackets == 0)
   #expect(buffer.statistics.reorderedPackets == 1)
 }
 
-@Test func jitterBufferConcealsBurstLossAsOneContinuousTimeline() {
-  var buffer = PacketJitterBuffer(
-    startupHoldNanoseconds: 0,
-    reorderHoldNanoseconds: 20_000_000
+@Test func jitterBufferAbsorbsOfficeScaleBurstJitterWithoutConcealment() {
+  var buffer = PacketJitterBuffer()
+  let firstPresentation: UInt64 = 1_000_000_000
+  let networkLead: UInt64 = 300_000_000
+  var arrivals: [(time: UInt64, packet: TimedAudioPacket)] = []
+
+  for sequence in UInt32(1)...80 {
+    let presentation = firstPresentation + UInt64(sequence - 1) * 5_000_000
+    let burstDelay: UInt64 = sequence == 30 ? 200_000_000 : 0
+    arrivals.append(
+      (
+        presentation - networkLead + burstDelay,
+        timedPacket(sequence: sequence, presentation: presentation)
+      )
+    )
+  }
+  arrivals.sort { $0.time < $1.time }
+
+  var output: [RenderChunk] = []
+  for arrival in arrivals {
+    output.append(contentsOf: buffer.insert(arrival.packet, nowNanoseconds: arrival.time))
+  }
+  output.append(
+    contentsOf: buffer.drain(
+      nowNanoseconds: firstPresentation + 79 * 5_000_000
+        - PacketJitterBuffer.schedulingLeadNanoseconds
+    ))
+
+  #expect(output.map(\.sequence) == Array(UInt32(1)...80))
+  #expect(output.allSatisfy { !$0.isConcealed })
+  #expect(buffer.statistics.missingPackets == 0)
+  #expect(buffer.statistics.reorderedPackets > 0)
+}
+
+@Test func jitterBufferConcealsRealLossAtTheSchedulingDeadline() {
+  var buffer = PacketJitterBuffer()
+  let presentation: UInt64 = 1_000_000_000
+
+  _ = buffer.insert(timedPacket(sequence: 30, presentation: presentation), nowNanoseconds: 0)
+  _ = buffer.drain(
+    nowNanoseconds: presentation - PacketJitterBuffer.schedulingLeadNanoseconds
   )
+  _ = buffer.insert(
+    timedPacket(sequence: 32, presentation: presentation + 10_000_000),
+    nowNanoseconds: presentation - 24_000_000
+  )
+  let stillWaiting = buffer.drain(
+    nowNanoseconds: presentation + 5_000_000
+      - PacketJitterBuffer.schedulingLeadNanoseconds - 1
+  )
+  let recovered = buffer.drain(
+    nowNanoseconds: presentation + 5_000_000
+      - PacketJitterBuffer.schedulingLeadNanoseconds
+  )
+
+  #expect(stillWaiting.isEmpty)
+  #expect(recovered.map(\.sequence) == [31, 32])
+  #expect(recovered.map(\.isConcealed) == [true, false])
+  #expect(buffer.statistics.missingPackets == 1)
+  let late = buffer.insert(
+    timedPacket(sequence: 31, presentation: presentation + 5_000_000),
+    nowNanoseconds: presentation + 1
+  )
+  #expect(late.isEmpty)
+  #expect(buffer.statistics.latePackets == 1)
+}
+
+@Test func jitterBufferConcealsBurstLossAsOneContinuousTimeline() {
+  var buffer = PacketJitterBuffer()
   let presentation: UInt64 = 1_000_000_000
 
   _ = buffer.insert(timedPacket(sequence: 40, presentation: presentation), nowNanoseconds: 0)
+  _ = buffer.drain(
+    nowNanoseconds: presentation - PacketJitterBuffer.schedulingLeadNanoseconds
+  )
   _ = buffer.insert(
     timedPacket(sequence: 44, presentation: presentation + 20_000_000),
-    nowNanoseconds: 100_000_000
+    nowNanoseconds: presentation - 24_000_000
   )
-  let recovered = buffer.drain(nowNanoseconds: 120_000_000)
+  let recovered = buffer.drain(
+    nowNanoseconds: presentation + 5_000_000
+      - PacketJitterBuffer.schedulingLeadNanoseconds
+  )
 
   #expect(recovered.map(\.sequence) == [41, 42, 43, 44])
   #expect(recovered.map(\.isConcealed) == [true, true, true, false])
   #expect(buffer.statistics.missingPackets == 3)
+  #expect(buffer.statistics.concealedFrames == 720)
   #expect(
     zip(recovered, recovered.dropFirst()).allSatisfy {
       $1.localPresentationNanoseconds - $0.localPresentationNanoseconds == 5_000_000
@@ -317,19 +380,23 @@ import Testing
 }
 
 @Test func jitterBufferRejectsPacketsThatAlreadyMissedTheirTimeline() {
-  var buffer = PacketJitterBuffer(startupHoldNanoseconds: 0)
-  _ = buffer.insert(timedPacket(sequence: 30, presentation: 1_000_000_000), nowNanoseconds: 0)
+  var buffer = PacketJitterBuffer()
+  let presentation: UInt64 = 1_000_000_000
+  _ = buffer.insert(timedPacket(sequence: 30, presentation: presentation), nowNanoseconds: 0)
+  _ = buffer.drain(
+    nowNanoseconds: presentation - PacketJitterBuffer.schedulingLeadNanoseconds
+  )
   let late = buffer.insert(
-    timedPacket(sequence: 30, presentation: 1_000_000_000),
-    nowNanoseconds: 1
+    timedPacket(sequence: 30, presentation: presentation),
+    nowNanoseconds: presentation
   )
 
   #expect(late.isEmpty)
   #expect(buffer.statistics.latePackets == 1)
 }
 
-@Test func jitterBufferUsesStartupWindowToRecoverAnEarlierFirstPacket() {
-  var buffer = PacketJitterBuffer(startupHoldNanoseconds: 15_000_000)
+@Test func jitterBufferUsesThePlaybackDeadlineToRecoverAnEarlierFirstPacket() {
+  var buffer = PacketJitterBuffer()
   let start: UInt64 = 1_000_000_000
 
   let second = buffer.insert(
@@ -338,16 +405,20 @@ import Testing
   )
   let first = buffer.insert(
     timedPacket(sequence: 40, presentation: start),
-    nowNanoseconds: 5_000_000
+    nowNanoseconds: 500_000_000
   )
   let third = buffer.insert(
     timedPacket(sequence: 42, presentation: start + 10_000_000),
-    nowNanoseconds: 15_000_000
+    nowNanoseconds: 900_000_000
+  )
+  let ready = buffer.drain(
+    nowNanoseconds: start - PacketJitterBuffer.schedulingLeadNanoseconds
   )
 
   #expect(second.isEmpty)
   #expect(first.isEmpty)
-  #expect(third.map(\.sequence) == [40, 41, 42])
+  #expect(third.isEmpty)
+  #expect(ready.map(\.sequence) == [40, 41, 42])
   #expect(buffer.statistics.latePackets == 0)
   #expect(buffer.statistics.reorderedPackets == 1)
 }
@@ -640,14 +711,15 @@ func fourHourVirtualSoakKeepsIndependentClocksInRoomPhase() throws {
 @Test func rollingPlaybackEventsExpireInsteadOfMakingHealthPermanentlyDegraded() {
   var events = RollingPlaybackEvents(windowNanoseconds: 10_000_000_000)
   let initial = events.observe(
-    PlaybackEventCounters(missingPackets: 3, reorderedPackets: 1),
+    PlaybackEventCounters(missingPackets: 3, concealedFrames: 720, reorderedPackets: 1),
     at: 1_000_000_000
   )
   #expect(initial.missingPackets == 3)
+  #expect(initial.concealedFrames == 720)
   #expect(initial.reorderedPackets == 1)
 
   let expired = events.observe(
-    PlaybackEventCounters(missingPackets: 3, reorderedPackets: 1),
+    PlaybackEventCounters(missingPackets: 3, concealedFrames: 720, reorderedPackets: 1),
     at: 11_000_000_001
   )
   #expect(expired == PlaybackEventCounters())
@@ -719,7 +791,21 @@ func fourHourVirtualSoakKeepsIndependentClocksInRoomPhase() throws {
   #expect(health.resynchronizations == 0)
   #expect(health.discardedPackets == 0)
   #expect(health.outputLatencyMilliseconds == 0)
+  #expect(health.concealedAudioMilliseconds == 0)
+  #expect(health.recentConcealedAudioMilliseconds == 0)
   #expect(health.lastRecoveryReason == nil)
+}
+
+@Test func playbackHealthRoundTripsConcealedAudioDuration() throws {
+  let expected = PlaybackHealth(
+    missingPackets: 20,
+    latePackets: 8,
+    concealedAudioMilliseconds: 108.84,
+    recentConcealedAudioMilliseconds: 54.42
+  )
+
+  let encoded = try JSONEncoder().encode(expected)
+  #expect(try JSONDecoder().decode(PlaybackHealth.self, from: encoded) == expected)
 }
 
 @Test func transportDiagnosticsDecodeBeforeSendDropsFromOlderReports() throws {

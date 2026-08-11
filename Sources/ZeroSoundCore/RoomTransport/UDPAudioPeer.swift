@@ -14,7 +14,7 @@ final class UDPAudioPeer: @unchecked Sendable {
   private var registrationTimer: DispatchSourceTimer?
   private var pingTimer: DispatchSourceTimer?
   private var sequence: UInt64 = 0
-  private var audioSendQueue = LatestValueSendQueue<Data>()
+  private var audioSendWindow = BoundedDatagramSendWindow()
   private var lastReceiveNanoseconds: UInt64 = 0
   private var isStopped = true
   private var hasFailed = false
@@ -70,7 +70,7 @@ final class UDPAudioPeer: @unchecked Sendable {
     pingTimer = nil
     connection?.cancel()
     connection = nil
-    audioSendQueue.reset()
+    audioSendWindow.reset()
     lastReceiveNanoseconds = 0
   }
 
@@ -111,13 +111,13 @@ final class UDPAudioPeer: @unchecked Sendable {
 
   private func enqueueAudio(_ data: Data) {
     guard let connection else { return }
-    let previousDrops = audioSendQueue.droppedValues
-    if let immediate = audioSendQueue.enqueue(data) {
-      sendAudioNow(immediate, on: connection)
+    let previousDrops = audioSendWindow.droppedDatagrams
+    let admitted = audioSendWindow.beginSend()
+    if audioSendWindow.droppedDatagrams != previousDrops {
+      onSendDrops?(audioSendWindow.droppedDatagrams)
     }
-    if audioSendQueue.droppedValues != previousDrops {
-      onSendDrops?(audioSendQueue.droppedValues)
-    }
+    guard admitted else { return }
+    sendAudioNow(data, on: connection)
   }
 
   private func sendAudioNow(_ data: Data, on connection: NWConnection) {
@@ -127,10 +127,9 @@ final class UDPAudioPeer: @unchecked Sendable {
         guard let self, let connection else { return }
         self.queue.async {
           guard self.connection === connection else { return }
+          self.audioSendWindow.completeSend()
           if let error {
             self.fail("Audio send failed: \(error.localizedDescription)", on: connection)
-          } else if let next = self.audioSendQueue.didComplete() {
-            self.sendAudioNow(next, on: connection)
           }
         }
       })
@@ -197,7 +196,7 @@ final class UDPAudioPeer: @unchecked Sendable {
     pingTimer?.cancel()
     pingTimer = nil
     self.connection = nil
-    audioSendQueue.reset()
+    audioSendWindow.reset()
     connection.cancel()
     onError?(reason)
   }

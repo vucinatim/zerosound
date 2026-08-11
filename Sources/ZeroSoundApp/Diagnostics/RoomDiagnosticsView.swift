@@ -80,8 +80,11 @@ struct RoomDiagnosticsView: View {
         } ?? "Measuring…"
       )
       metric(
-        "Concealed · 10 sec",
-        String(controller.playbackHealth.recentMissingPackets))
+        "Concealed audio · 10 sec",
+        String(format: "%.0f ms", controller.playbackHealth.recentConcealedAudioMilliseconds))
+      metric(
+        "Late arrivals · 10 sec",
+        String(controller.playbackHealth.recentLatePackets))
       metric(
         "Reordered · 10 sec",
         String(controller.playbackHealth.recentReorderedPackets))
