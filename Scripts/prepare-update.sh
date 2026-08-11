@@ -73,7 +73,10 @@ cp "$generated" "$site/appcast.xml"
 if [[ -n "$release_notes" && -f "$staging/$release_notes_name" ]]; then
   cp "$staging/$release_notes_name" "$site/$release_notes_name"
 fi
-shasum -a 256 "$archive" > "$project_root/.build/ZeroSound-$version-SHA256SUMS"
+(
+  cd "$project_root/.build"
+  shasum -a 256 "$archive_name" > "ZeroSound-$version-SHA256SUMS"
+)
 
 print -r -- "Prepared ZeroSound $version ($build) update metadata:"
 print -r -- "  $archive"

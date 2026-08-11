@@ -1,0 +1,25 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>ZeroSound</title>
+        <item>
+            <title>0.10.0</title>
+            <pubDate>Tue, 11 Aug 2026 11:34:16 +0200</pubDate>
+            <link>https://github.com/vucinatim/zerosound</link>
+            <sparkle:version>11</sparkle:version>
+            <sparkle:shortVersionString>0.10.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink>https://vucinatim.github.io/zerosound/ZeroSound-0.10.0-macOS-universal.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/vucinatim/zerosound/releases/download/v0.10.0/ZeroSound-0.10.0-macOS-universal.zip" length="4165562" type="application/octet-stream" sparkle:edSignature="I3hlGk8mPF0/ERSESYjGHBJ0LEgq1/7nL75OoNPy7a24UPeUB0Mn0OEAjVKZoaVe0rxXR29YnqdCb2aGO3zjCg=="/>
+        </item>
+        <item>
+            <title>0.9.1</title>
+            <pubDate>Tue, 11 Aug 2026 09:41:12 +0200</pubDate>
+            <link>https://github.com/vucinatim/zerosound</link>
+            <sparkle:version>10</sparkle:version>
+            <sparkle:shortVersionString>0.9.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/vucinatim/zerosound/releases/download/v0.9.1/ZeroSound-0.9.1-macOS-universal.zip" length="4128329" type="application/octet-stream" sparkle:edSignature="3l6x2x72zbaIFBgkP2A8eNJ9RQuAVGMtReWdyMW/XHmP+0+4TnJ7Zifl7CGzrQXXAuMeg9IWmv5NuhcTIFVgBw=="/>
+        </item>
+    </channel>
+</rss>
