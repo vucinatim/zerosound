@@ -3,6 +3,19 @@
     <channel>
         <title>ZeroSound</title>
         <item>
+            <title>0.11.3</title>
+            <pubDate>Tue, 11 Aug 2026 15:57:18 +0200</pubDate>
+            <link>https://github.com/vucinatim/zerosound</link>
+            <sparkle:version>16</sparkle:version>
+            <sparkle:shortVersionString>0.11.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[# ZeroSound 0.11.3
+
+- Makes the complete room-health pill clickable, including its padding and chevron area.
+]]></description>
+            <enclosure url="https://github.com/vucinatim/zerosound/releases/download/v0.11.3/ZeroSound-0.11.3-macOS-universal.zip" length="4387963" type="application/octet-stream" sparkle:edSignature="ySiR9+t8KsKdbSEFEP9DxAxN5RNb3NjmUE6KOTsuN60pm/uqBgxt5pe7IUeux6fZO8nl3He/yQSnyyN0BUjuDA=="/>
+        </item>
+        <item>
             <title>0.11.2</title>
             <pubDate>Tue, 11 Aug 2026 15:50:15 +0200</pubDate>
             <link>https://github.com/vucinatim/zerosound</link>
@@ -101,16 +114,6 @@
 - Adds regression coverage for player-start scheduling, explicit sample origins, and live-health transitions.
 ]]></description>
             <enclosure url="https://github.com/vucinatim/zerosound/releases/download/v0.10.1/ZeroSound-0.10.1-macOS-universal.zip" length="4166431" type="application/octet-stream" sparkle:edSignature="tJUyaXnaZ7v25KBRzjxpJTcEXM5ZUlzRGohjrm9PFplcA6ziamxIJsEnPwvMzC28H2oKwh75U3oJZHj3aY9cDw=="/>
-        </item>
-        <item>
-            <title>0.10.0</title>
-            <pubDate>Tue, 11 Aug 2026 11:34:16 +0200</pubDate>
-            <link>https://github.com/vucinatim/zerosound</link>
-            <sparkle:version>11</sparkle:version>
-            <sparkle:shortVersionString>0.10.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <sparkle:releaseNotesLink>https://vucinatim.github.io/zerosound/ZeroSound-0.10.0-macOS-universal.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/vucinatim/zerosound/releases/download/v0.10.0/ZeroSound-0.10.0-macOS-universal.zip" length="4165562" type="application/octet-stream" sparkle:edSignature="I3hlGk8mPF0/ERSESYjGHBJ0LEgq1/7nL75OoNPy7a24UPeUB0Mn0OEAjVKZoaVe0rxXR29YnqdCb2aGO3zjCg=="/>
         </item>
     </channel>
 </rss>
