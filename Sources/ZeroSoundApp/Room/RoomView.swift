@@ -79,9 +79,10 @@ struct RoomView: View {
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 9)
+        .background(.quaternary.opacity(0.55), in: Capsule())
+        .contentShape(Capsule())
       }
       .buttonStyle(.plain)
-      .background(.quaternary.opacity(0.55), in: Capsule())
       .accessibilityHint("Opens technical room diagnostics")
     }
     .frame(maxWidth: .infinity)
