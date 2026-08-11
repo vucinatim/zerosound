@@ -73,6 +73,15 @@ public struct ClockEstimator: Sendable {
     (clockRate - 1) * 1_000_000
   }
 
+  public var mapping: RoomClockMapping? {
+    guard let referenceLocalNanoseconds else { return nil }
+    return RoomClockMapping(
+      referenceLocalNanoseconds: referenceLocalNanoseconds,
+      referenceRoomNanoseconds: referenceCoordinatorNanoseconds,
+      roomRate: clockRate
+    )
+  }
+
   public mutating func add(_ sample: ClockSample) {
     samples.append(sample)
     if samples.count > capacity {
@@ -88,15 +97,11 @@ public struct ClockEstimator: Sendable {
   }
 
   public func localTime(forCoordinatorTime coordinatorTime: UInt64) -> UInt64? {
-    guard let referenceLocalNanoseconds else { return nil }
-    let coordinatorDelta = Double(coordinatorTime) - referenceCoordinatorNanoseconds
-    return clampedUInt64(Double(referenceLocalNanoseconds) + coordinatorDelta / clockRate)
+    mapping?.localTime(forRoomTime: coordinatorTime)
   }
 
   public func coordinatorTime(forLocalTime localTime: UInt64) -> UInt64? {
-    guard let referenceLocalNanoseconds else { return nil }
-    let localDelta = signedDoubleDifference(localTime, referenceLocalNanoseconds)
-    return clampedUInt64(referenceCoordinatorNanoseconds + localDelta * clockRate)
+    mapping?.roomTime(forLocalTime: localTime)
   }
 
   private mutating func bootstrapFromBestSample() {

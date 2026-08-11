@@ -54,10 +54,12 @@ single diagnostics policy. `ZeroSoundController` is the main-actor use-case and 
 `ZeroSoundApp` renders discovery, one room surface, its diagnostics inspector, and the compact
 menu-bar remote. Views do not own sockets, timers, audio queues, or transitions.
 
-The control protocol uses typed commands and events. Audio packets carry both source identity and
-stream generation, so delayed traffic from a replaced source is rejected. Core room correctness is
-tested with an injectable clock and deterministic in-process delivery faults; Bonjour and UDP are
-kept at the transport boundary.
+The control protocol uses typed commands and events over one framed TCP session per member. A
+separate authenticated UDP plane carries only audio and clock samples, with bounded per-peer sends
+that discard stale queued audio instead of accumulating latency. Audio packets carry both source
+identity and stream generation, so delayed traffic from a replaced source is rejected. Core room
+correctness is tested with an injectable clock, deterministic delivery faults, and real loopback
+TCP/UDP integration tests; Bonjour remains passive discovery only.
 
 ## Current security boundary
 

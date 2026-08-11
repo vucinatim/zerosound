@@ -1,10 +1,10 @@
 import Foundation
 
 public enum ZeroSoundProtocol {
-  public static let controlVersion: UInt16 = 9
+  public static let controlVersion: UInt16 = 10
   public static let audioVersion: UInt8 = 2
-  public static let appVersion = "0.10.1"
-  public static let serviceType = "_zerosound-room._udp"
+  public static let appVersion = "0.11.0"
+  public static let serviceType = "_zerosound-room._tcp"
 }
 
 public struct ProtocolHeader: Codable, Equatable, Sendable {
@@ -40,13 +40,9 @@ public struct ProtocolHeader: Codable, Equatable, Sendable {
 public enum ControlPayload: Codable, Equatable, Sendable {
   case command(RoomCommand)
   case event(RoomEvent)
-  case clockPing(sequence: UInt64, clientSendNanoseconds: UInt64)
-  case clockPong(
-    sequence: UInt64,
-    clientSendNanoseconds: UInt64,
-    coordinatorReceiveNanoseconds: UInt64,
-    coordinatorSendNanoseconds: UInt64
-  )
+  case audioOffer(port: UInt16, registrationToken: UUID)
+  case audioPathRequest
+  case audioPathReady
 }
 
 public struct ControlMessage: Codable, Equatable, Sendable {

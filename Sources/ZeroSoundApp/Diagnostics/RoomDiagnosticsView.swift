@@ -87,6 +87,7 @@ struct RoomDiagnosticsView: View {
         String(controller.playbackHealth.recentReorderedPackets))
       metric("Underruns", String(controller.playbackHealth.rendererUnderruns))
       metric("Automatic resyncs", String(controller.playbackHealth.resynchronizations))
+      metric("Last recovery", controller.playbackHealth.lastRecoveryReason ?? "None")
       metric(
         "Output latency",
         String(format: "%.1f ms", controller.playbackHealth.outputLatencyMilliseconds))
@@ -97,6 +98,12 @@ struct RoomDiagnosticsView: View {
         "Room clock skew",
         controller.clockSkewPartsPerMillion.map { String(format: "%+.1f ppm", $0) }
           ?? "Measuring…")
+      metric("Control plane", controller.transportDiagnostics.control.rawValue.capitalized)
+      metric("Audio plane", controller.transportDiagnostics.audio.rawValue.capitalized)
+      metric("Join stage", controller.transportDiagnostics.joinStage)
+      metric(
+        "Audio dropped before send",
+        String(controller.transportDiagnostics.audioDatagramsDroppedBeforeSend))
     }
   }
 

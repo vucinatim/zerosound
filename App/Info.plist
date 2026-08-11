@@ -17,9 +17,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-	<string>0.10.1</string>
+	<string>0.11.0</string>
     <key>CFBundleVersion</key>
-	<string>12</string>
+	<string>13</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.2</string>
     <key>NSHighResolutionCapable</key>
@@ -28,7 +28,7 @@
     <string>ZeroSound uses your local network to discover nearby Macs and synchronize their audio.</string>
     <key>NSBonjourServices</key>
     <array>
-        <string>_zerosound-room._udp</string>
+        <string>_zerosound-room._tcp</string>
     </array>
     <key>NSAudioCaptureUsageDescription</key>
     <string>ZeroSound captures system audio so it can play in sync on your connected Macs.</string>

@@ -18,6 +18,7 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
   public let recentRendererUnderruns: UInt64
   public let recentResynchronizations: UInt64
   public let phaseResynchronizations: UInt64
+  public let lastRecoveryReason: String?
 
   public init(
     missingPackets: UInt64 = 0,
@@ -36,7 +37,8 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
     recentReorderedPackets: UInt64 = 0,
     recentRendererUnderruns: UInt64 = 0,
     recentResynchronizations: UInt64 = 0,
-    phaseResynchronizations: UInt64 = 0
+    phaseResynchronizations: UInt64 = 0,
+    lastRecoveryReason: String? = nil
   ) {
     self.missingPackets = missingPackets
     self.latePackets = latePackets
@@ -55,6 +57,7 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
     self.recentRendererUnderruns = recentRendererUnderruns
     self.recentResynchronizations = recentResynchronizations
     self.phaseResynchronizations = phaseResynchronizations
+    self.lastRecoveryReason = lastRecoveryReason
   }
 
   public var hasContinuityIssues: Bool {
@@ -85,6 +88,7 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
     case recentRendererUnderruns
     case recentResynchronizations
     case phaseResynchronizations
+    case lastRecoveryReason
   }
 
   public init(from decoder: Decoder) throws {
@@ -117,6 +121,7 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
       try values.decodeIfPresent(UInt64.self, forKey: .recentResynchronizations) ?? 0
     phaseResynchronizations =
       try values.decodeIfPresent(UInt64.self, forKey: .phaseResynchronizations) ?? 0
+    lastRecoveryReason = try values.decodeIfPresent(String.self, forKey: .lastRecoveryReason)
   }
 
   public func encode(to encoder: Encoder) throws {
@@ -138,5 +143,6 @@ public struct PlaybackHealth: Codable, Equatable, Hashable, Sendable {
     try values.encode(recentRendererUnderruns, forKey: .recentRendererUnderruns)
     try values.encode(recentResynchronizations, forKey: .recentResynchronizations)
     try values.encode(phaseResynchronizations, forKey: .phaseResynchronizations)
+    try values.encodeIfPresent(lastRecoveryReason, forKey: .lastRecoveryReason)
   }
 }

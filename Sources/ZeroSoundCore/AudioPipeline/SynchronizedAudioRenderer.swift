@@ -17,11 +17,13 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
   private var playbackState = SynchronizedPlaybackState()
   private let startPlanner = PlaybackStartPlanner()
   private let reanchorPlanner = PlaybackReanchorPlanner()
-  private var playbackTimeline: PlaybackTimeline?
+  private var streamTimeline: StreamTimeline?
+  private var nextScheduledPlayerSampleTime: Int64?
   private var configuredSampleRate: UInt32?
   private var renderBatchFrames = 0
   private var accumulatedSamples: [Int16] = []
   private var accumulatedPresentationNanoseconds: UInt64?
+  private var accumulatedRoomPresentationNanoseconds: UInt64?
   private var scheduledFrames: UInt64 = 0
   private var scheduledBatches: [ScheduledAudioBatch] = []
   private var nextScheduledBatchID: UInt64 = 0
@@ -32,12 +34,14 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
   private var resynchronizations: UInt64 = 0
   private var phaseResynchronizations: UInt64 = 0
   private var pendingPhaseResynchronization = false
+  private var lastRecoveryReason: String?
   private var discardedPackets: UInt64 = 0
   private var isAcceptingAudio = false
   private var lastStatisticsTime: UInt64 = 0
   private var outputPresentationLatencyNanoseconds: UInt64 = 0
   private var lastPhaseObservationNanoseconds: UInt64 = 0
   private var configurationObserver: NSObjectProtocol?
+  private var roomClockMapping = RoomClockMapping.identity
 
   var onStatistics: (@Sendable (PlaybackHealth) -> Void)?
 
@@ -61,9 +65,14 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     }
   }
 
-  func enqueue(_ packet: AudioPacket, at localPresentationNanoseconds: UInt64) {
+  func enqueue(_ packet: AudioPacket, roomClockMapping: RoomClockMapping) {
     queue.async { [self] in
       do {
+        self.roomClockMapping = roomClockMapping
+        guard
+          let localPresentationNanoseconds = roomClockMapping.localTime(
+            forRoomTime: packet.presentationNanoseconds)
+        else { return }
         try configureIfNeeded(sampleRate: packet.sampleRate, packetFrames: packet.frameCount)
         isAcceptingAudio = true
         let chunks = jitterBuffer.insert(
@@ -108,9 +117,12 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
         break
       }
 
-      if accumulatedSamples.isEmpty, accumulatedPresentationNanoseconds == nil {
+      if accumulatedSamples.isEmpty {
         accumulatedPresentationNanoseconds =
-          playbackState.selectedAnchorNanoseconds ?? chunk.localPresentationNanoseconds
+          playbackState.selectedAnchorNanoseconds
+          ?? roomClockMapping.localTime(forRoomTime: chunk.roomPresentationNanoseconds)
+          ?? chunk.localPresentationNanoseconds
+        accumulatedRoomPresentationNanoseconds = chunk.roomPresentationNanoseconds
       }
       accumulatedSamples.append(contentsOf: chunk.samples)
       scheduleCompleteBatches(sampleRate: sampleRate)
@@ -121,8 +133,10 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
   private func beginPriming(sampleRate: UInt32) {
     accumulatedSamples.removeAll(keepingCapacity: true)
     accumulatedPresentationNanoseconds = playbackState.selectedAnchorNanoseconds
+    accumulatedRoomPresentationNanoseconds = nil
     phaseController.reset()
-    playbackTimeline = nil
+    streamTimeline = nil
+    nextScheduledPlayerSampleTime = nil
     lastPhaseObservationNanoseconds = 0
     varispeed.rate = 1
     fadeInTotalFrames = max(1, Int(sampleRate) * Self.fadeInMilliseconds / 1_000)
@@ -134,13 +148,24 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
       let sampleCount = renderBatchFrames * 2
       var samples = Array(accumulatedSamples.prefix(sampleCount))
       accumulatedSamples.removeFirst(sampleCount)
-      guard let presentation = accumulatedPresentationNanoseconds else { return }
+      guard
+        let presentation = accumulatedPresentationNanoseconds,
+        let roomPresentation = accumulatedRoomPresentationNanoseconds
+      else { return }
       applyFadeIn(to: &samples, frameCount: renderBatchFrames)
 
-      guard schedule(samples: samples, frameCount: renderBatchFrames, at: presentation) else {
+      guard
+        schedule(
+          samples: samples,
+          frameCount: renderBatchFrames,
+          at: presentation,
+          roomPresentationNanoseconds: roomPresentation
+        )
+      else {
         discardedPackets &+= UInt64(Self.packetsPerRenderBuffer)
         accumulatedSamples.removeAll(keepingCapacity: true)
         accumulatedPresentationNanoseconds = nil
+        accumulatedRoomPresentationNanoseconds = nil
         return
       }
       accumulatedPresentationNanoseconds =
@@ -149,13 +174,17 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
           frames: renderBatchFrames,
           sampleRate: sampleRate
         )
+      accumulatedRoomPresentationNanoseconds =
+        roomPresentation
+        &+ durationNanoseconds(frames: renderBatchFrames, sampleRate: sampleRate)
     }
   }
 
   private func schedule(
     samples: [Int16],
     frameCount: Int,
-    at presentationNanoseconds: UInt64
+    at presentationNanoseconds: UInt64,
+    roomPresentationNanoseconds: UInt64
   ) -> Bool {
     guard
       let sampleRate = configuredSampleRate,
@@ -200,6 +229,23 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     }
 
     let generation = renderGeneration
+    guard
+      let playerSampleStart = nextScheduledPlayerSampleTime ?? startPlan?.playerSampleOrigin
+    else { return false }
+    if var streamTimeline {
+      streamTimeline.observe(
+        roomPresentationNanoseconds: roomPresentationNanoseconds,
+        atPlayerSampleTime: playerSampleStart
+      )
+      self.streamTimeline = streamTimeline
+    } else {
+      streamTimeline = StreamTimeline(
+        anchorRoomPresentationNanoseconds: roomPresentationNanoseconds,
+        anchorPlayerSampleTime: playerSampleStart,
+        sampleRate: sampleRate
+      )
+    }
+    nextScheduledPlayerSampleTime = playerSampleStart + Int64(frameCount)
     nextScheduledBatchID &+= 1
     let batchID = nextScheduledBatchID
     scheduledFrames &+= UInt64(frameCount)
@@ -208,7 +254,7 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
         id: batchID,
         samples: samples,
         frameCount: frameCount,
-        presentationNanoseconds: presentationNanoseconds
+        roomPresentationNanoseconds: roomPresentationNanoseconds
       )
     )
     player.scheduleBuffer(
@@ -232,10 +278,6 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     }
 
     if let startPlan {
-      playbackTimeline = PlaybackTimeline(
-        anchorPresentationNanoseconds: startPlan.presentationNanoseconds,
-        anchorPlayerSampleTime: startPlan.playerSampleOrigin
-      )
       playbackState.didScheduleAnchor()
       if isRecoveryAnchor {
         resynchronizations &+= 1
@@ -254,16 +296,19 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
   private func transitionToRecovery() {
     guard playbackState.beginRecovery() else { return }
     rendererUnderruns &+= 1
+    lastRecoveryReason = "Audio queue underrun"
     pendingPhaseResynchronization = false
     renderGeneration &+= 1
     scheduledFrames = 0
     scheduledBatches.removeAll(keepingCapacity: true)
     accumulatedSamples.removeAll(keepingCapacity: true)
     accumulatedPresentationNanoseconds = nil
+    accumulatedRoomPresentationNanoseconds = nil
     fadeInFramesRemaining = 0
     fadeInTotalFrames = 0
     phaseController.reset()
-    playbackTimeline = nil
+    streamTimeline = nil
+    nextScheduledPlayerSampleTime = nil
     lastPhaseObservationNanoseconds = 0
     varispeed.rate = 1
     player.volume = 0
@@ -278,6 +323,7 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     let enteredRecovery = playbackState.didUnderrun()
     if enteredRecovery {
       rendererUnderruns &+= 1
+      lastRecoveryReason = "Output device configuration changed"
     } else {
       playbackState.reset()
     }
@@ -285,12 +331,14 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     stopEngine()
     jitterBuffer.reset()
     phaseController.reset()
-    playbackTimeline = nil
+    streamTimeline = nil
+    nextScheduledPlayerSampleTime = nil
     configuredSampleRate = nil
     outputPresentationLatencyNanoseconds = 0
     renderBatchFrames = 0
     accumulatedSamples.removeAll(keepingCapacity: true)
     accumulatedPresentationNanoseconds = nil
+    accumulatedRoomPresentationNanoseconds = nil
     scheduledFrames = 0
     scheduledBatches.removeAll(keepingCapacity: true)
     fadeInFramesRemaining = 0
@@ -380,7 +428,8 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
         recentReorderedPackets: recent.reorderedPackets,
         recentRendererUnderruns: recent.rendererUnderruns,
         recentResynchronizations: recent.resynchronizations,
-        phaseResynchronizations: phaseResynchronizations
+        phaseResynchronizations: phaseResynchronizations,
+        lastRecoveryReason: lastRecoveryReason
       )
     )
   }
@@ -393,12 +442,14 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     jitterBuffer.reset()
     rollingEvents.reset()
     phaseController.reset()
-    playbackTimeline = nil
+    streamTimeline = nil
+    nextScheduledPlayerSampleTime = nil
     playbackState.reset()
     configuredSampleRate = nil
     renderBatchFrames = 0
     accumulatedSamples.removeAll(keepingCapacity: true)
     accumulatedPresentationNanoseconds = nil
+    accumulatedRoomPresentationNanoseconds = nil
     scheduledFrames = 0
     scheduledBatches.removeAll(keepingCapacity: true)
     fadeInFramesRemaining = 0
@@ -407,6 +458,7 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     resynchronizations = 0
     phaseResynchronizations = 0
     pendingPhaseResynchronization = false
+    lastRecoveryReason = nil
     discardedPackets = 0
     lastStatisticsTime = 0
     lastPhaseObservationNanoseconds = 0
@@ -444,8 +496,7 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
 
   private func measuredPhaseErrorNanoseconds() -> Int64? {
     guard
-      let playbackTimeline,
-      let sampleRate = configuredSampleRate,
+      let streamTimeline,
       let renderTime = player.lastRenderTime,
       renderTime.isHostTimeValid,
       let playerTime = player.playerTime(forNodeTime: renderTime),
@@ -453,11 +504,11 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
       playerTime.sampleTime >= 0
     else { return nil }
 
-    return playbackTimeline.phaseErrorNanoseconds(
+    return streamTimeline.phaseErrorNanoseconds(
       renderHostNanoseconds: MonotonicTime.ticksToNanoseconds(renderTime.hostTime),
       playerSampleTime: playerTime.sampleTime,
-      sampleRate: sampleRate,
-      outputLatencyNanoseconds: outputPresentationLatencyNanoseconds
+      outputLatencyNanoseconds: outputPresentationLatencyNanoseconds,
+      roomClockMapping: roomClockMapping
     )
   }
 
@@ -468,8 +519,11 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
       let sampleRate = configuredSampleRate,
       playbackState.beginRecovery()
     else { return }
+    lastRecoveryReason = "Room phase discontinuity"
 
-    let presentations = scheduledBatches.map(\.presentationNanoseconds)
+    let presentations = scheduledBatches.compactMap {
+      roomClockMapping.localTime(forRoomTime: $0.roomPresentationNanoseconds)
+    }
     guard
       let anchorIndex = reanchorPlanner.anchorIndex(
         in: presentations,
@@ -484,8 +538,10 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
       scheduledBatches.removeAll(keepingCapacity: true)
       accumulatedSamples.removeAll(keepingCapacity: true)
       accumulatedPresentationNanoseconds = nil
+      accumulatedRoomPresentationNanoseconds = nil
       phaseController.reset()
-      playbackTimeline = nil
+      streamTimeline = nil
+      nextScheduledPlayerSampleTime = nil
       lastPhaseObservationNanoseconds = 0
       varispeed.rate = 1
       player.volume = 0
@@ -496,13 +552,18 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
     }
     let retainedBatches = Array(scheduledBatches[anchorIndex...])
     let anchor = retainedBatches[0]
+    guard
+      let anchorLocalPresentation = roomClockMapping.localTime(
+        forRoomTime: anchor.roomPresentationNanoseconds)
+    else { return }
 
     pendingPhaseResynchronization = true
     renderGeneration &+= 1
     scheduledFrames = 0
     scheduledBatches.removeAll(keepingCapacity: true)
     phaseController.reset()
-    playbackTimeline = nil
+    streamTimeline = nil
+    nextScheduledPlayerSampleTime = nil
     lastPhaseObservationNanoseconds = 0
     varispeed.rate = 1
     player.volume = 0
@@ -511,12 +572,13 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
 
     guard
       playbackState.considerAnchor(
-        presentationNanoseconds: anchor.presentationNanoseconds,
+        presentationNanoseconds: anchorLocalPresentation,
         nowNanoseconds: nowNanoseconds
       )
     else {
       accumulatedSamples.removeAll(keepingCapacity: true)
       accumulatedPresentationNanoseconds = nil
+      accumulatedRoomPresentationNanoseconds = nil
       publishStatisticsIfNeeded(force: true)
       return
     }
@@ -527,10 +589,13 @@ final class SynchronizedAudioRenderer: @unchecked Sendable {
       var samples = batch.samples
       applyFadeIn(to: &samples, frameCount: batch.frameCount)
       guard
+        let localPresentation = roomClockMapping.localTime(
+          forRoomTime: batch.roomPresentationNanoseconds),
         schedule(
           samples: samples,
           frameCount: batch.frameCount,
-          at: batch.presentationNanoseconds
+          at: localPresentation,
+          roomPresentationNanoseconds: batch.roomPresentationNanoseconds
         )
       else { break }
     }
@@ -542,7 +607,7 @@ private struct ScheduledAudioBatch {
   let id: UInt64
   let samples: [Int16]
   let frameCount: Int
-  let presentationNanoseconds: UInt64
+  let roomPresentationNanoseconds: UInt64
 }
 
 private func durationNanoseconds(frames: Int, sampleRate: UInt32) -> UInt64 {

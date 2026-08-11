@@ -16,6 +16,7 @@ public final class ZeroSoundController: ObservableObject {
   @Published public private(set) var streamedPacketCount: UInt64 = 0
   @Published public private(set) var capturePeakLevel: Float = 0
   @Published public private(set) var lastError: String?
+  @Published public private(set) var transportDiagnostics = TransportDiagnostics.idle
 
   public let localMemberID: MemberID
   public let deviceName: String
@@ -36,7 +37,11 @@ public final class ZeroSoundController: ObservableObject {
     if let localIndex = room.members.firstIndex(where: { $0.id == localMemberID }) {
       room.members[localIndex].playbackHealth = playbackHealth
     }
-    return diagnosticsPolicy.evaluate(snapshot: room, reconnecting: isReconnecting)
+    return diagnosticsPolicy.evaluate(
+      snapshot: room,
+      reconnecting: isReconnecting,
+      transport: transportDiagnostics
+    )
   }
 
   private let defaults: UserDefaults
@@ -239,6 +244,10 @@ public final class ZeroSoundController: ObservableObject {
       "State: \(membershipDescription)",
       "Room health: \(healthSeverity.title)",
       "Status: \(status)",
+      "Control transport: \(transportDiagnostics.control.rawValue)",
+      "Audio transport: \(transportDiagnostics.audio.rawValue)",
+      "Join stage: \(transportDiagnostics.joinStage)",
+      "Audio dropped before send: \(transportDiagnostics.audioDatagramsDroppedBeforeSend)",
       "Clock offset: \(formatted(clockOffsetMilliseconds, suffix: "ms"))",
       "Round trip: \(formatted(roundTripMilliseconds, suffix: "ms"))",
       "Clock samples: \(clockSampleCount)",
@@ -291,8 +300,8 @@ public final class ZeroSoundController: ObservableObject {
         self.handle(event)
       }
     }
-    connection.onAudio = { [weak self] packet, localTime in
-      self?.audioRenderer.enqueue(packet, at: localTime)
+    connection.onAudio = { [weak self] packet, mapping in
+      self?.audioRenderer.enqueue(packet, roomClockMapping: mapping)
     }
     connection.onStreamFormat = { [weak self] sampleRate in
       Task { @MainActor in self?.streamSampleRate = Double(sampleRate) }
@@ -313,6 +322,9 @@ public final class ZeroSoundController: ObservableObject {
     }
     connection.onError = { [weak self] message in
       Task { @MainActor in self?.report(message) }
+    }
+    connection.onTransportDiagnostics = { [weak self] diagnostics in
+      Task { @MainActor in self?.transportDiagnostics = diagnostics }
     }
   }
 
@@ -336,7 +348,7 @@ public final class ZeroSoundController: ObservableObject {
       }
     }
     coordinator.onAudio = { [weak self] packet in
-      self?.audioRenderer.enqueue(packet, at: packet.presentationNanoseconds)
+      self?.audioRenderer.enqueue(packet, roomClockMapping: .identity)
     }
     coordinator.onStreamFormat = { [weak self] sampleRate in
       Task { @MainActor in self?.streamSampleRate = Double(sampleRate) }
@@ -344,8 +356,16 @@ public final class ZeroSoundController: ObservableObject {
     coordinator.onError = { [weak self] message in
       Task { @MainActor in self?.report(message) }
     }
+    coordinator.onAudioSendDrops = { [weak self] count in
+      Task { @MainActor in
+        guard let self else { return }
+        self.transportDiagnostics = self.transportDiagnostics
+          .withAudioDatagramsDroppedBeforeSend(count)
+      }
+    }
     try coordinator.start()
     self.coordinator = coordinator
+    transportDiagnostics = .localCoordinator
     if completingJoin {
       try membershipMachine.joined(snapshot)
       membership = membershipMachine.state
@@ -465,6 +485,15 @@ public final class ZeroSoundController: ObservableObject {
   }
 
   private func handleDisconnection(_ reason: String) {
+    if case .joining = membership {
+      resetToDiscovery(error: reason)
+      return
+    }
+    if case .reconnecting = membership {
+      lastError = reason
+      scheduleReconnect()
+      return
+    }
     guard let snapshot = room else { return }
     let departedCoordinatorID = connectedCoordinatorID ?? snapshot.coordinatorID
     stopCaptureAndPlayback()
@@ -547,6 +576,9 @@ public final class ZeroSoundController: ObservableObject {
   }
 
   private func resetToDiscovery(error: String) {
+    reconnectTask?.cancel()
+    reconnectTask = nil
+    stopCaptureAndPlayback()
     coordinator?.stop()
     coordinator = nil
     connection?.disconnect()
@@ -554,6 +586,8 @@ public final class ZeroSoundController: ObservableObject {
     connectedCoordinatorID = nil
     membershipMachine = MembershipStateMachine(state: .outsideRoom)
     membership = membershipMachine.state
+    endProcessActivity()
+    clearMetrics()
     report(error)
   }
 
@@ -571,6 +605,7 @@ public final class ZeroSoundController: ObservableObject {
     roundTripMilliseconds = nil
     clockSampleCount = 0
     clockSkewPartsPerMillion = nil
+    transportDiagnostics = .idle
     droppedCaptureFrames = 0
     streamedPacketCount = 0
     capturePeakLevel = 0

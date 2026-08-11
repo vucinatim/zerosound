@@ -112,6 +112,77 @@ import Testing
   #expect(AudioPacket.decode(encoded) == nil)
 }
 
+@Test func productionAudioPacketStaysBelowTheConservativeDatagramBudget() {
+  let packet = AudioPacket(
+    sequence: 1,
+    presentationNanoseconds: 1,
+    sampleRate: 48_000,
+    floatSamples: [Float](repeating: 0, count: SystemAudioStreamer.packetFrames * 2)
+  )
+
+  #expect(packet.encode().count == 1_008)
+  #expect(packet.encode().count < 1_200)
+}
+
+@Test func controlFrameDecoderHandlesArbitraryTCPReadBoundaries() throws {
+  let first = Data("first message".utf8)
+  let second = Data("second message".utf8)
+  let stream = try ControlFrameCodec.encode(first) + ControlFrameCodec.encode(second)
+  var decoder = ControlFrameDecoder()
+  var decoded: [Data] = []
+
+  for byte in stream {
+    decoded.append(contentsOf: try decoder.append(Data([byte])))
+  }
+  try decoder.finish()
+
+  #expect(decoded == [first, second])
+}
+
+@Test func controlFrameDecoderRejectsInvalidAndTruncatedFrames() throws {
+  var oversized = ControlFrameDecoder(maximumPayloadBytes: 8)
+  #expect(throws: ControlFrameError.frameTooLarge(9)) {
+    try oversized.append(Data([0, 0, 0, 9]))
+  }
+
+  var empty = ControlFrameDecoder()
+  #expect(throws: ControlFrameError.emptyFrame) {
+    try empty.append(Data([0, 0, 0, 0]))
+  }
+
+  var truncated = ControlFrameDecoder()
+  _ = try truncated.append(Data([0, 0, 0, 4, 1, 2]))
+  #expect(throws: ControlFrameError.truncatedFrame) {
+    try truncated.finish()
+  }
+}
+
+@Test func audioPlaneControlRoundTripsWithoutCollidingWithAudioPackets() throws {
+  let registration = AudioPlaneControl.register(
+    roomID: RoomID(),
+    memberID: MemberID(),
+    coordinatorTerm: 7,
+    token: UUID()
+  )
+  let encoded = try AudioPlaneControlCodec.encode(registration)
+
+  #expect(try AudioPlaneControlCodec.decode(encoded) == registration)
+  #expect(AudioPacket.decode(encoded) == nil)
+  #expect(try AudioPlaneControlCodec.decode(Data("unrelated".utf8)) == nil)
+}
+
+@Test func realTimeSendQueueIsBoundedAndKeepsOnlyTheNewestPendingPacket() {
+  var queue = LatestValueSendQueue<Int>()
+
+  #expect(queue.enqueue(1) == 1)
+  #expect(queue.enqueue(2) == nil)
+  #expect(queue.enqueue(3) == nil)
+  #expect(queue.droppedValues == 1)
+  #expect(queue.didComplete() == 3)
+  #expect(queue.didComplete() == nil)
+  #expect(queue.enqueue(4) == 4)
+}
+
 @Test func jitterBufferReordersPacketsWithoutBreakingContinuity() {
   var buffer = PacketJitterBuffer(startupHoldNanoseconds: 0)
   let start: UInt64 = 1_000_000_000
@@ -275,14 +346,18 @@ import Testing
   #expect(earlyRate < 1)
 }
 
-@Test func playbackTimelineMeasuresHardwarePhaseAgainstIntendedPresentation() throws {
-  let timeline = PlaybackTimeline(anchorPresentationNanoseconds: 1_000_000_000)
+@Test func streamTimelineMeasuresHardwarePhaseAgainstIntendedPresentation() throws {
+  let timeline = StreamTimeline(
+    anchorRoomPresentationNanoseconds: 1_000_000_000,
+    anchorPlayerSampleTime: 0,
+    sampleRate: 48_000
+  )
   let synchronized = try #require(
     timeline.phaseErrorNanoseconds(
       renderHostNanoseconds: 1_497_500_000,
       playerSampleTime: 24_000,
-      sampleRate: 48_000,
-      outputLatencyNanoseconds: 2_500_000
+      outputLatencyNanoseconds: 2_500_000,
+      roomClockMapping: .identity
     )
   )
   #expect(synchronized == 0)
@@ -291,8 +366,8 @@ import Testing
     timeline.phaseErrorNanoseconds(
       renderHostNanoseconds: 1_505_500_000,
       playerSampleTime: 24_000,
-      sampleRate: 48_000,
-      outputLatencyNanoseconds: 2_500_000
+      outputLatencyNanoseconds: 2_500_000,
+      roomClockMapping: .identity
     )
   )
   #expect(late == 8_000_000)
@@ -312,16 +387,17 @@ import Testing
   #expect(plan.renderStartNanoseconds == 1_297_500_000)
   #expect(plan.playerSampleOrigin == 0)
 
-  let timeline = PlaybackTimeline(
-    anchorPresentationNanoseconds: plan.presentationNanoseconds,
-    anchorPlayerSampleTime: plan.playerSampleOrigin
+  let timeline = StreamTimeline(
+    anchorRoomPresentationNanoseconds: plan.presentationNanoseconds,
+    anchorPlayerSampleTime: plan.playerSampleOrigin,
+    sampleRate: 48_000
   )
   let synchronized = try #require(
     timeline.phaseErrorNanoseconds(
       renderHostNanoseconds: 1_797_500_000,
       playerSampleTime: 24_000,
-      sampleRate: 48_000,
-      outputLatencyNanoseconds: 2_500_000
+      outputLatencyNanoseconds: 2_500_000,
+      roomClockMapping: .identity
     )
   )
   #expect(synchronized == 0)
@@ -338,19 +414,20 @@ import Testing
   #expect(plan == nil)
 }
 
-@Test func playbackTimelineUsesItsExplicitPlayerSampleOrigin() throws {
+@Test func streamTimelineUsesItsExplicitPlayerSampleOrigin() throws {
   // A player started 70 ms before its content anchor reports 3,360 pre-roll samples at 48 kHz.
   // Treating those as content frames recreates the production -70 ms false phase error.
-  let timeline = PlaybackTimeline(
-    anchorPresentationNanoseconds: 1_000_000_000,
-    anchorPlayerSampleTime: 3_360
+  let timeline = StreamTimeline(
+    anchorRoomPresentationNanoseconds: 1_000_000_000,
+    anchorPlayerSampleTime: 3_360,
+    sampleRate: 48_000
   )
   let synchronized = try #require(
     timeline.phaseErrorNanoseconds(
       renderHostNanoseconds: 1_497_500_000,
       playerSampleTime: 27_360,
-      sampleRate: 48_000,
-      outputLatencyNanoseconds: 2_500_000
+      outputLatencyNanoseconds: 2_500_000,
+      roomClockMapping: .identity
     )
   )
 
@@ -359,10 +436,133 @@ import Testing
     timeline.phaseErrorNanoseconds(
       renderHostNanoseconds: 999_000_000,
       playerSampleTime: 3_359,
-      sampleRate: 48_000,
-      outputLatencyNanoseconds: 2_500_000
+      outputLatencyNanoseconds: 2_500_000,
+      roomClockMapping: .identity
     ) == nil
   )
+}
+
+@Test func streamTimelineReconcilesAnActivePlayheadWithUpdatedRoomClock() throws {
+  let timeline = StreamTimeline(
+    anchorRoomPresentationNanoseconds: 1_000_000_000,
+    anchorPlayerSampleTime: 0,
+    sampleRate: 48_000
+  )
+  let correctedMapping = RoomClockMapping(
+    referenceLocalNanoseconds: 1_000_000_000,
+    referenceRoomNanoseconds: 1_020_000_000,
+    roomRate: 1
+  )
+
+  let phaseError = try #require(
+    timeline.phaseErrorNanoseconds(
+      renderHostNanoseconds: 1_500_000_000,
+      playerSampleTime: 24_000,
+      outputLatencyNanoseconds: 0,
+      roomClockMapping: correctedMapping
+    )
+  )
+
+  #expect(phaseError == 20_000_000)
+}
+
+@Test func streamTimelineLearnsSourceClockRateWithoutLosingPhase() throws {
+  var timeline = StreamTimeline(
+    anchorRoomPresentationNanoseconds: 1_000_000_000,
+    anchorPlayerSampleTime: 0,
+    sampleRate: 48_000
+  )
+  let sourceRate = 1 + 40.0 / 1_000_000
+
+  for batch in 1...(12 * 50) {
+    let playerSample = Int64(batch * 960)
+    let elapsedSeconds = Double(batch) / 50
+    let roomTime = UInt64(
+      (1_000_000_000 + elapsedSeconds * 1_000_000_000 * sourceRate).rounded())
+    timeline.observe(
+      roomPresentationNanoseconds: roomTime,
+      atPlayerSampleTime: playerSample
+    )
+  }
+
+  let predicted = try #require(timeline.roomTime(forPlayerSampleTime: 13 * 48_000))
+  let expected = UInt64((1_000_000_000 + 13 * 1_000_000_000 * sourceRate).rounded())
+  #expect(abs(Int64(predicted) - Int64(expected)) < 100_000)
+}
+
+@Test func continuousPlayoutConvergesThroughClockSkewLossAndMappingCorrection() throws {
+  let sampleRate: UInt32 = 48_000
+  let framesPerStep: Int64 = 960
+  let stepNanoseconds: UInt64 = 20_000_000
+  let sourceRate = 1 + 35.0 / 1_000_000
+  let hardwareRate = 1 - 25.0 / 1_000_000
+  var roomMapping = RoomClockMapping(
+    referenceLocalNanoseconds: 1_000_000_000,
+    referenceRoomNanoseconds: 1_000_000_000,
+    roomRate: 1 + 18.0 / 1_000_000
+  )
+  var timeline = StreamTimeline(
+    anchorRoomPresentationNanoseconds: 1_000_000_000,
+    anchorPlayerSampleTime: 0,
+    sampleRate: sampleRate
+  )
+  var controller = PlaybackPhaseController(
+    phaseFilterFactor: 0.25,
+    rateFilterFactor: 0.2
+  )
+  var localTime: UInt64 = 1_008_000_000
+  var renderedPlayerSamples = 0.0
+
+  for step in 1...(60 * 50) {
+    let scheduledSample = Int64(step) * framesPerStep
+    let elapsedStreamSeconds = Double(scheduledSample) / Double(sampleRate)
+    let packetRoomTime = UInt64(
+      (1_000_000_000 + elapsedStreamSeconds * 1_000_000_000 * sourceRate).rounded())
+    let isBurstLoss = (1_200...1_204).contains(step)
+    if !isBurstLoss && step % 97 != 0 {
+      timeline.observe(
+        roomPresentationNanoseconds: packetRoomTime,
+        atPlayerSampleTime: scheduledSample
+      )
+    }
+
+    localTime &+= stepNanoseconds
+    renderedPlayerSamples +=
+      Double(framesPerStep) * hardwareRate * controller.playbackRate
+    let playerSample = Int64(renderedPlayerSamples.rounded())
+    let phaseError = try #require(
+      timeline.phaseErrorNanoseconds(
+        renderHostNanoseconds: localTime,
+        playerSampleTime: playerSample,
+        outputLatencyNanoseconds: 0,
+        roomClockMapping: roomMapping
+      ))
+    _ = controller.observe(phaseErrorNanoseconds: phaseError, at: localTime)
+
+    if step == 1_500 {
+      roomMapping = RoomClockMapping(
+        referenceLocalNanoseconds: localTime,
+        referenceRoomNanoseconds: Double(
+          try #require(roomMapping.roomTime(forLocalTime: localTime))) + 2_000_000,
+        roomRate: roomMapping.roomRate
+      )
+    }
+  }
+
+  let finalPhase = try #require(controller.phaseErrorMilliseconds)
+  #expect(abs(finalPhase) < 2)
+}
+
+@Test func deterministicFaultSeedsKeepContinuousPlayoutBounded() throws {
+  let seeds: [UInt64] = [0x5EED_0001, 0x5EED_0002, 0x5EED_0003, 0x5EED_0004, 0x5EED_0005]
+
+  for seed in seeds {
+    let finalPhase = try simulatedFinalPhaseMilliseconds(seed: seed)
+    #expect(
+      abs(finalPhase) < 3,
+      "Seed \(String(seed, radix: 16)) finished at \(finalPhase) ms"
+    )
+  }
 }
 
 @Test func reanchorPlannerReusesOnlySafelySchedulableFutureAudio() {
@@ -478,7 +678,17 @@ import Testing
   #expect(health.resynchronizations == 0)
   #expect(health.discardedPackets == 0)
   #expect(health.outputLatencyMilliseconds == 0)
+  #expect(health.lastRecoveryReason == nil)
   #expect(!health.requiresAttention)
+}
+
+@Test func transportDiagnosticsDecodeBeforeSendDropsFromOlderReports() throws {
+  let data = Data(
+    #"{"control":"ready","audio":"ready","joinStage":"Ready"}"#.utf8
+  )
+
+  let diagnostics = try JSONDecoder().decode(TransportDiagnostics.self, from: data)
+  #expect(diagnostics.audioDatagramsDroppedBeforeSend == 0)
 }
 
 @Test func playbackHealthClearsAttentionAfterAutomaticResynchronization() {
@@ -573,4 +783,99 @@ private func clockSample(
     coordinatorSend: coordinatorMidpoint,
     clientReceive: localMidpoint + (roundTrip - halfRoundTrip)
   )
+}
+
+private func simulatedFinalPhaseMilliseconds(seed: UInt64) throws -> Double {
+  let sampleRate: UInt32 = 48_000
+  let framesPerStep: Int64 = 960
+  let stepNanoseconds: UInt64 = 20_000_000
+  var random = DeterministicRandom(seed: seed)
+  let sourceRate = 1 + random.signedUnit() * 60 / 1_000_000
+  let hardwareRate = 1 + random.signedUnit() * 60 / 1_000_000
+  let roomRate = 1 + random.signedUnit() * 40 / 1_000_000
+  var roomMapping = RoomClockMapping(
+    referenceLocalNanoseconds: 1_000_000_000,
+    referenceRoomNanoseconds: 1_000_000_000,
+    roomRate: roomRate
+  )
+  var timeline = StreamTimeline(
+    anchorRoomPresentationNanoseconds: 1_000_000_000,
+    anchorPlayerSampleTime: 0,
+    sampleRate: sampleRate
+  )
+  var controller = PlaybackPhaseController(
+    phaseFilterFactor: 0.25,
+    rateFilterFactor: 0.2
+  )
+  var localTime: UInt64 = 1_008_000_000
+  var renderedPlayerSamples = 0.0
+  var burstLossRemaining = 0
+
+  for step in 1...(90 * 50) {
+    let scheduledSample = Int64(step) * framesPerStep
+    let elapsedStreamSeconds = Double(scheduledSample) / Double(sampleRate)
+    let packetRoomTime = UInt64(
+      (1_000_000_000 + elapsedStreamSeconds * 1_000_000_000 * sourceRate).rounded())
+
+    let isLost: Bool
+    if burstLossRemaining > 0 {
+      burstLossRemaining -= 1
+      isLost = true
+    } else if random.unit() < 0.006 {
+      burstLossRemaining = 1 + Int(random.next() % 6)
+      isLost = true
+    } else {
+      isLost = random.unit() < 0.012
+    }
+    if !isLost {
+      timeline.observe(
+        roomPresentationNanoseconds: packetRoomTime,
+        atPlayerSampleTime: scheduledSample
+      )
+    }
+
+    localTime &+= stepNanoseconds
+    renderedPlayerSamples += Double(framesPerStep) * hardwareRate * controller.playbackRate
+    let phaseError = try #require(
+      timeline.phaseErrorNanoseconds(
+        renderHostNanoseconds: localTime,
+        playerSampleTime: Int64(renderedPlayerSamples.rounded()),
+        outputLatencyNanoseconds: 0,
+        roomClockMapping: roomMapping
+      ))
+    _ = controller.observe(phaseErrorNanoseconds: phaseError, at: localTime)
+
+    if step == 1_500 || step == 3_000 {
+      let mappedRoomTime = try #require(roomMapping.roomTime(forLocalTime: localTime))
+      let correction = Int64((random.signedUnit() * 2_000_000).rounded())
+      roomMapping = RoomClockMapping(
+        referenceLocalNanoseconds: localTime,
+        referenceRoomNanoseconds: Double(Int64(mappedRoomTime) + correction),
+        roomRate: roomRate
+      )
+    }
+  }
+
+  return try #require(controller.phaseErrorMilliseconds)
+}
+
+private struct DeterministicRandom {
+  private var state: UInt64
+
+  init(seed: UInt64) {
+    state = seed
+  }
+
+  mutating func next() -> UInt64 {
+    state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+    return state
+  }
+
+  mutating func unit() -> Double {
+    Double(next() >> 11) / Double(UInt64(1) << 53)
+  }
+
+  mutating func signedUnit() -> Double {
+    unit() * 2 - 1
+  }
 }

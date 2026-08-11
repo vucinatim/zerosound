@@ -21,8 +21,20 @@ public enum RoomHealthSeverity: Int, Codable, Comparable, Sendable {
 public struct RoomDiagnosticsPolicy: Sendable {
   public init() {}
 
-  public func evaluate(snapshot: RoomSnapshot, reconnecting: Bool = false) -> RoomHealthSeverity {
+  public func evaluate(
+    snapshot: RoomSnapshot,
+    reconnecting: Bool = false,
+    transport: TransportDiagnostics = .idle
+  ) -> RoomHealthSeverity {
     if reconnecting || snapshot.members.contains(where: { $0.connection == .reconnecting }) {
+      return .recovering
+    }
+    if transport.control == .degraded || transport.control == .closed
+      || (snapshot.audioSource.isLive && transport.audio == .degraded)
+    {
+      return .needsAttention
+    }
+    if transport.control == .connecting || transport.audio == .registering {
       return .recovering
     }
     let health = snapshot.members.map(\.playbackHealth)

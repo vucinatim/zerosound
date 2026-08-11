@@ -8,6 +8,7 @@ struct TimedAudioPacket: Sendable {
 struct RenderChunk: Sendable {
   let sequence: UInt32
   let samples: [Int16]
+  let roomPresentationNanoseconds: UInt64
   let localPresentationNanoseconds: UInt64
   let desiredPresentationNanoseconds: UInt64?
   let isConcealed: Bool
@@ -188,6 +189,7 @@ struct PacketJitterBuffer: Sendable {
     return RenderChunk(
       sequence: timedPacket.packet.sequence,
       samples: samples,
+      roomPresentationNanoseconds: timedPacket.packet.presentationNanoseconds,
       localPresentationNanoseconds: timelinePresentation,
       desiredPresentationNanoseconds: timedPacket.localPresentationNanoseconds,
       isConcealed: false
@@ -223,6 +225,9 @@ struct PacketJitterBuffer: Sendable {
         RenderChunk(
           sequence: expected &+ UInt32(packetIndex),
           samples: samples,
+          roomPresentationNanoseconds:
+            futurePacket.packet.presentationNanoseconds
+            &- UInt64(count - packetIndex) * packetDurationNanoseconds,
           localPresentationNanoseconds:
             presentation &+ UInt64(packetIndex) &* packetDurationNanoseconds,
           desiredPresentationNanoseconds: nil,

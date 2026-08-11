@@ -1,6 +1,6 @@
-# ZeroSound v0.8 office validation
+# ZeroSound v0.11 office validation
 
-Use the same `ZeroSound-0.8.0-macOS-universal.zip` on every Mac. Because this release candidate is
+Use the same `ZeroSound-0.11.0-macOS-universal.zip` on every Mac. Because this release candidate is
 ad-hoc signed, extract it and use **Control-click → Open** on first launch. Keep all Macs on the same
 local Wi-Fi and temporarily disable VPNs that intercept local traffic.
 
@@ -18,7 +18,8 @@ rejoining; a brief recovery is acceptable only when the scenario deliberately di
 5. Close both main windows. From the menu bar, stop, restart, reopen, and finally leave the room.
 
 Pass criteria: no persistent pop/static, no audible echo or lasting timing shift, no duplicate member,
-no capture drops, and no increasing underrun/resynchronization counter during stable playback.
+no capture drops, no audio datagrams dropped before send, and no increasing
+underrun/resynchronization counter during stable playback.
 
 ## Five- and eight-Mac room pass
 
@@ -51,6 +52,11 @@ At 15 minutes, one hour, and the end, copy diagnostics from every Mac. Record an
 its approximate time. Fail the run for persistent desynchronization, repeated automatic resyncs on a
 stable network, unbounded counter growth, a lost/duplicated member, a crash, or a room that requires
 manual recreation after coordinator departure.
+
+For any audible event, record the control/audio transport states, room-phase error, playback
+correction, queue depth, recent concealed packets, underruns, last recovery reason, and audio
+datagrams dropped before send. Those fields identify whether the event originated before send, on
+the LAN, in clock reconciliation, or at the output device.
 
 ## Result record
 

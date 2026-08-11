@@ -3,6 +3,13 @@
 The approved product and architecture rewrite is specified in
 [`docs/v0.8-room-rewrite-plan.md`](docs/v0.8-room-rewrite-plan.md).
 
+The v0.11 reliability architecture is specified in
+[`docs/v0.11-reliable-transport-and-sync-plan.md`](docs/v0.11-reliable-transport-and-sync-plan.md).
+Its implementation now replaces shared UDP control/audio transport with framed TCP control plus
+dedicated UDP audio and continuously reconciles playback against the current room clock. The
+remaining release gate is measured two/five/eight-Mac office validation and update testing, not more
+transport architecture.
+
 The room domain, typed protocol, coordinator recovery, transferable audio path, diagnostics policy,
 Core Audio pipeline, and release tooling now have clean ownership boundaries. These are intentionally
 deferred product-level investments rather than shortcuts inside the v0.8 architecture.

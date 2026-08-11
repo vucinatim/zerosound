@@ -47,6 +47,31 @@ private func snapshot(
   #expect(machine.state == .outsideRoom)
 }
 
+@Test func transportJoinLifecycleRequiresControlAndAudioReadiness() throws {
+  var machine = JoinStateMachine()
+
+  try machine.apply(.begin)
+  #expect(machine.phase == .connectingControl)
+  try machine.apply(.controlReady)
+  #expect(machine.phase == .awaitingAudioOffer)
+  try machine.apply(.audioOffered)
+  #expect(machine.phase == .registeringAudio)
+  try machine.apply(.accepted)
+  #expect(machine.isJoined)
+  try machine.apply(.close)
+  #expect(machine.phase == .closed)
+}
+
+@Test func transportJoinLifecycleRejectsAcceptanceBeforeAudioRegistration() throws {
+  var machine = JoinStateMachine()
+  try machine.apply(.begin)
+  try machine.apply(.controlReady)
+
+  #expect(throws: JoinStateError.self) {
+    try machine.apply(.accepted)
+  }
+}
+
 @Test func membershipRejectsInvalidAndWrongRoomTransitions() throws {
   var machine = MembershipStateMachine(state: .outsideRoom)
   #expect(throws: RoomTransitionError.invalidMembershipTransition) {
